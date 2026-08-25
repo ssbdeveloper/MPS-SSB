@@ -184,6 +184,9 @@ exports.mapSowOperationToTask = route(async (req) => {
 
 exports.listBaySchedules = route(async (req) => {
   const result = await service.listBaySchedules(req.query);
+  if (!req.query.ignore_sync) {
+    await service.syncBayScheduleDates();
+  }
   return (res) => success(res, result.rows, 200, paginationSummary(result));
 });
 

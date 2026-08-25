@@ -1,13 +1,14 @@
+
 export const AREA_OPTIONS = [
-  { areaCode: 'AREA-01', areaName: 'Area 1', bays: ['A38', 'A37', 'A36', 'A35'] },
-  { areaCode: 'AREA-02', areaName: 'Area 2', bays: ['A34', 'A33', 'A32'] },
-  { areaCode: 'AREA-03', areaName: 'Area 3', bays: ['A30', 'A29', 'A28', 'A27'] },
-  { areaCode: 'AREA-04', areaName: 'Area 4', bays: ['A26', 'A25', 'A24', 'A23'] },
-  { areaCode: 'AREA-05', areaName: 'Area 5', bays: ['A22', 'A21', 'A20', 'A19'] },
-  { areaCode: 'AREA-06', areaName: 'Area 6', bays: ['A18', 'A17', 'A16', 'A15'] },
-  { areaCode: 'AREA-07', areaName: 'Area 7', bays: ['A14', 'A13', 'A12', 'A11'] },
-  { areaCode: 'AREA-08', areaName: 'Area 8', bays: ['A9', 'A8', 'A7', 'A6'] },
-  { areaCode: 'AREA-09', areaName: 'Area 9', bays: ['A5', 'A4', 'A3', 'A2'] },
+  { areaCode: 'AREA-01', areaName: 'Area 1',  bays: ['A38', 'A37', 'A36', 'A35'] },
+  { areaCode: 'AREA-02', areaName: 'Area 2',  bays: ['A34', 'A33', 'A32'] },
+  { areaCode: 'AREA-03', areaName: 'Area 3',  bays: ['A30', 'A29', 'A28', 'A27'] },
+  { areaCode: 'AREA-04', areaName: 'Area 4',  bays: ['A26', 'A25', 'A24', 'A23'] },
+  { areaCode: 'AREA-05', areaName: 'Area 5',  bays: ['A22', 'A21', 'A20', 'A19'] },
+  { areaCode: 'AREA-06', areaName: 'Area 6',  bays: ['A18', 'A17', 'A16', 'A15'] },
+  { areaCode: 'AREA-07', areaName: 'Area 7',  bays: ['A14', 'A13', 'A12', 'A11'] },
+  { areaCode: 'AREA-08', areaName: 'Area 8',  bays: ['A9', 'A8', 'A7', 'A6'] },
+  { areaCode: 'AREA-09', areaName: 'Area 9',  bays: ['A5', 'A4', 'A3', 'A2'] },
   { areaCode: 'AREA-10', areaName: 'Area 10', bays: ['A1'] },
   { areaCode: 'AREA-11', areaName: 'Area 11', bays: ['B38', 'B37', 'B36', 'B35'] },
   { areaCode: 'AREA-12', areaName: 'Area 12', bays: ['B34', 'B33', 'B32'] },
@@ -16,8 +17,7 @@ export const AREA_OPTIONS = [
   { areaCode: 'AREA-15', areaName: 'Area 15', bays: ['B22', 'B21', 'B20', 'B19'] },
   { areaCode: 'AREA-16', areaName: 'Area 16', bays: ['B17', 'B16', 'B15', 'B14'] },
   { areaCode: 'AREA-17', areaName: 'Area 17', bays: ['B13', 'B12', 'B11', 'B10'] },
-
-  { areaCode: 'AREA-18', areaName: 'Blasting & Prime', bays: ['PT1', 'PT2', 'PT3', 'BL1', 'BL2'] },
+  { areaCode: 'AREA-18', areaName: 'Blasting & Painting', bays: ['PT1', 'PT2', 'PT3', 'BL1', 'BL2'] },
 ];
 
 export const BLASTING_AREA_CODE = 'AREA-18';
@@ -42,9 +42,7 @@ export function bayCode(base, zoneKey) {
 }
 
 export function splitBayCode(code) {
-  const text = String(code || '')
-    .trim()
-    .toUpperCase();
+  const text = String(code || '').trim().toUpperCase();
   const match = /^([A-Z]{1,3}[0-9]{1,3})([CE])$/.exec(text);
   if (!match) return { base: text, zoneKey: null };
   const zone = BAY_ZONES.find((z) => z.suffix === match[2]);

@@ -18,6 +18,7 @@ import {
   ZONE_BY_KEY,
   bayCode as makeBayCode,
   splitBayCode,
+  areaRangeLabel,
   zoneOrderFor,
   dedupeByGroup,
   formatDate,
@@ -380,7 +381,7 @@ export default function BayAreaDetail({
             <p className="text-[11px] font-semibold uppercase tracking-wide text-[#0077b6]">
               {area.areaCode}
             </p>
-            <h3 className="truncate text-sm font-extrabold text-slate-800">{area.areaName}</h3>
+            <h3 className="truncate text-sm font-extrabold text-slate-800">{areaRangeLabel(area)}</h3>
           </div>
         </div>
 

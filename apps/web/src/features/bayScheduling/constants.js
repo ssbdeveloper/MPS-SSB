@@ -1,14 +1,30 @@
-import { areaDef } from '../../config/manufacturingAreas';
+
+import { areaDef, bayCodesOf as bayCodesOfRaw } from '../../config/manufacturingAreas';
+
+export const bayCodesOf = bayCodesOfRaw;
+
+export function areaRangeLabel(area) {
+  if (!area) return '';
+  if (area.areaCode === 'AREA-18') return area.areaName || 'Blasting & Painting';
+  const bays = Array.isArray(area.bays) ? area.bays : [];
+  if (bays.length === 0) return area.areaName || area.areaCode || '';
+  if (bays.length === 1) return bays[0];
+  return `${bays[0]}-${bays[bays.length - 1]}`;
+}
+
+export function buildAreaReservations(schedulesByBay, area) {
+  const seen = new Map();
+  for (const code of bayCodesOf(area.areaCode)) {
+    for (const row of schedulesByBay?.get(code) || []) {
+      if (row.status === 'CANCELLED') continue;
+      if (!seen.has(row.schedule_id)) seen.set(row.schedule_id, row);
+    }
+  }
+  return [...seen.values()].sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)));
+}
 
 export {
-  BAY_ZONES,
-  ZONE_BY_KEY,
-  bayCode,
-  bayLabel,
-  splitBayCode,
-  zoneOrderFor,
-  isZonedArea,
-  bayCodesOf,
+  BAY_ZONES, ZONE_BY_KEY, bayCode, bayLabel, splitBayCode, zoneOrderFor, isZonedArea,
 } from '../../config/manufacturingAreas';
 
 const areaItem = (code, label) => ({ type: 'area', ...areaDef(code), label });
@@ -46,9 +62,7 @@ export const LANE_B = [
 
 export const BLASTING_AREA = { type: 'area', ...areaDef('AREA-18'), label: 'top' };
 
-export const ALL_AREAS = [...LANE_A, ...LANE_B, BLASTING_AREA].filter(
-  (item) => item.type === 'area'
-);
+export const ALL_AREAS = [...LANE_A, ...LANE_B, BLASTING_AREA].filter((item) => item.type === 'area');
 
 export const AREA_BY_CODE = ALL_AREAS.reduce((acc, area) => {
   acc[area.areaCode] = area;
@@ -56,16 +70,8 @@ export const AREA_BY_CODE = ALL_AREAS.reduce((acc, area) => {
 }, {});
 
 export const RESERVATION_STATUS = {
-  RESERVED: {
-    label: 'Reserved',
-    bar: '#f59e0b',
-    pill: 'bg-amber-100 text-amber-700 border-amber-200',
-  },
-  CONFIRMED: {
-    label: 'Confirmed',
-    bar: '#10b981',
-    pill: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-  },
+  RESERVED: { label: 'Reserved', bar: '#f59e0b', pill: 'bg-amber-100 text-amber-700 border-amber-200' },
+  CONFIRMED: { label: 'Confirmed', bar: '#10b981', pill: 'bg-emerald-100 text-emerald-700 border-emerald-200' },
   DONE: { label: 'Done', bar: '#94a3b8', pill: 'bg-slate-100 text-slate-600 border-slate-200' },
   CANCELLED: { label: 'Cancelled', bar: '#ef4444', pill: 'bg-red-100 text-red-700 border-red-200' },
 };
@@ -193,40 +199,15 @@ export function groupKeyOf(schedule) {
   const bays = Array.isArray(schedule.bay_codes)
     ? [...schedule.bay_codes].sort().join('|')
     : String(schedule.bay_codes || '');
-  return [
-    'legacy',
-    schedule.order_no ?? '',
-    dateKey(schedule.start_date),
-    dateKey(schedule.end_date),
-    bays,
-  ].join('__');
+  return ['legacy', schedule.order_no ?? '', dateKey(schedule.start_date), dateKey(schedule.end_date), bays].join('__');
 }
 
 const RESERVATION_FIELDS = [
-  'schedule_group_id',
-  'booking_type',
-  'purpose',
-  'order_no',
-  'project_id',
-  'project_name',
-  'area_code',
-  'area_name',
-  'bay_codes',
-  'start_date',
-  'end_date',
-  'status',
-  'notes',
-  'created_by',
-  'created_by_name',
-  'updated_by',
-  'updated_by_name',
-  'created_at',
-  'updated_at',
-  'part_name',
-  'customer',
-
-  'order_known',
-  'is_subcont',
+  'schedule_group_id', 'booking_type', 'purpose', 'order_no', 'project_id', 'project_name',
+  'area_code', 'area_name', 'bay_codes', 'start_date', 'end_date', 'status', 'notes',
+  'created_by', 'created_by_name', 'updated_by', 'updated_by_name',
+  'created_at', 'updated_at', 'part_name', 'customer',
+  'order_known', 'is_subcont',
 ];
 
 function peopleKeyOf(task) {
@@ -251,9 +232,7 @@ export function dedupeByGroup(schedules) {
         task_count: 0,
         people_total: null,
       };
-      RESERVATION_FIELDS.forEach((field) => {
-        entry[field] = row[field] ?? null;
-      });
+      RESERVATION_FIELDS.forEach((field) => { entry[field] = row[field] ?? null; });
       byKey.set(key, entry);
     } else {
       RESERVATION_FIELDS.forEach((field) => {

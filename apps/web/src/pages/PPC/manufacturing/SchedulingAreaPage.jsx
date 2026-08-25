@@ -109,8 +109,17 @@ const OrderPoolPanel = React.memo(function OrderPoolPanel({
   selectedOrder,
   onSelectOrder,
   onDragStart,
+  onSearchChange,
+  registerSearch,
 }) {
   const pool = useSowOrders();
+  useEffect(() => {
+    if (typeof registerSearch === 'function') registerSearch(pool.setSearch);
+  }, [registerSearch, pool.setSearch]);
+  const handleSearch = (value) => {
+    pool.setSearch(value);
+    if (typeof onSearchChange === 'function') onSearchChange(value);
+  };
   return (
     <OrderPanel
       orders={pool.orders}
@@ -119,7 +128,7 @@ const OrderPoolPanel = React.memo(function OrderPoolPanel({
       loading={pool.loading}
       error={pool.error}
       search={pool.search}
-      onSearchChange={pool.setSearch}
+      onSearchChange={handleSearch}
       tab={pool.tab}
       onTabChange={pool.setTab}
       selectedOrder={selectedOrder}
@@ -170,6 +179,11 @@ export default function SchedulingAreaPage() {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [reservation, setReservation] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [areaFilter, setAreaFilter] = useState('');
+  const poolSearchRef = useRef(null);
+  const registerPoolSearch = useCallback((fn) => {
+    poolSearchRef.current = fn;
+  }, []);
   const [saving, setSaving] = useState(false);
 
   const { schedules, byBay, loading, error, reload, cursorDate, setCursorDate } = useBaySchedules({
@@ -388,6 +402,8 @@ export default function SchedulingAreaPage() {
           selectedOrder={selectedOrder}
           onSelectOrder={handleSelectOrder}
           onDragStart={handleOrderDragStart}
+          onSearchChange={setAreaFilter}
+          registerSearch={registerPoolSearch}
         />
         <div className="flex min-h-0 flex-col gap-3">
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
@@ -457,6 +473,11 @@ export default function SchedulingAreaPage() {
         cursorDate={cursorDate}
         selectedAreaCode={selectedAreaCode}
         onSelectArea={handleSelectArea}
+        orderFilter={areaFilter}
+        onClearFilter={() => {
+          setAreaFilter('');
+          if (typeof poolSearchRef.current === 'function') poolSearchRef.current('');
+        }}
       />
     );
   }
