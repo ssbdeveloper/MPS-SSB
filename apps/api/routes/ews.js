@@ -23,9 +23,14 @@ router.post('/notifications/:id/played', controller.markTtsNotificationPlayed);
 router.get('/tts/playlist', requireAdmin, controller.getTtsPlaylist);
 
 router.get('/roster', roster.getRoster);
+router.get('/roster/month', roster.getRosterMonth);
 router.delete('/roster', roster.deleteRoster);
+router.put('/roster/bulk', roster.bulkUpdateRoster);
 router.put('/roster/status', roster.updateStatus);
 router.put('/roster/half-day', roster.updateHalfDay);
+router.get('/roster/foreman-team', roster.getForemanTeam);
+router.put('/roster/foreman-team/member', roster.setForemanMember);
+router.delete('/roster/foreman-team/member', roster.removeForemanMember);
 router.get('/roster/config', roster.getConfig);
 router.put('/roster/config/workday', roster.updateWorkday);
 router.put('/roster/group', roster.updateGroup);

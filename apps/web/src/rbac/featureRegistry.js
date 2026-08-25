@@ -40,6 +40,12 @@ export const FEATURES = {
     module: 'Timesheet',
     routes: ['/ews/roster'],
   },
+  roster_foreman_team: {
+    id: 'roster_foreman_team',
+    label: 'Foreman Team',
+    module: 'Timesheet',
+    routes: ['/ews/foreman-team'],
+  },
 
   bay_scheduling: {
     id: 'bay_scheduling',

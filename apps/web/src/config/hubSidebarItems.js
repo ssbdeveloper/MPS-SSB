@@ -18,6 +18,7 @@ import {
   Truck,
   UserCog,
   Users,
+  UsersRound,
 } from 'lucide-react';
 
 export const sidebarItems = [
@@ -43,6 +44,7 @@ export const sidebarItems = [
   },
   { title: 'Shift Capacity', icon: TimerReset, path: '/shift-definition', group: 'SOW & Planning' },
   { title: 'Roster Operator', icon: Users, path: '/ews/roster', group: 'Production' },
+  { title: 'Foreman Team', icon: UsersRound, path: '/ews/foreman-team', group: 'Production' },
   { title: 'EWS Notifications', icon: Bell, path: '/ews/notifications', group: 'Production' },
   { title: 'Kanban Board', icon: Factory, path: '/kanban-board', group: 'Production' },
   { title: 'Component Tracking', icon: Boxes, path: '/component-tracking', group: 'Production' },
