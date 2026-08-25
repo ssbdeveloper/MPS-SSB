@@ -23,6 +23,7 @@ router.post('/notifications/:id/played', controller.markTtsNotificationPlayed);
 router.get('/tts/playlist', requireAdmin, controller.getTtsPlaylist);
 
 router.get('/roster', roster.getRoster);
+router.delete('/roster', roster.deleteRoster);
 router.put('/roster/status', roster.updateStatus);
 router.put('/roster/half-day', roster.updateHalfDay);
 router.get('/roster/config', roster.getConfig);
