@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { badgeStyle, dotStyle, solidColor } from '../../theme/ewsStatus';
 import { cosmeticizeKpi, cosmeticTrendFor } from '../../theme/ewsCosmetic';
+import { isManufacturing } from '../../config/appVariant';
 
 const kpis = [
   {
@@ -486,7 +487,7 @@ function EwsControlTower() {
 
   const liveKpis = useMemo(
     () =>
-      kpis.map((item) => {
+      (isManufacturing() ? kpis.filter((item) => item.group !== 'machine') : kpis).map((item) => {
         const apiItem = summary?.kpis?.find((kpi) => kpi.key === item.key);
 
         return cosmeticizeKpi({
@@ -651,7 +652,7 @@ function EwsControlTower() {
 
         {[
           { group: 'labour', label: 'Labour (Operator)' },
-          { group: 'machine', label: 'Machine' },
+          ...(isManufacturing() ? [] : [{ group: 'machine', label: 'Machine' }]),
         ].map((row) => (
           <div key={row.group} className="mb-3 last:mb-0">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
