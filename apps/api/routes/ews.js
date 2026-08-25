@@ -24,6 +24,7 @@ router.get('/tts/playlist', requireAdmin, controller.getTtsPlaylist);
 
 router.get('/roster', roster.getRoster);
 router.put('/roster/status', roster.updateStatus);
+router.put('/roster/half-day', roster.updateHalfDay);
 router.get('/roster/config', roster.getConfig);
 router.put('/roster/config/workday', roster.updateWorkday);
 router.put('/roster/group', roster.updateGroup);

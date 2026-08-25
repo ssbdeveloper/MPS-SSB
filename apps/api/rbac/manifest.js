@@ -176,6 +176,7 @@ const MANIFEST = [
   { m: 'POST', p: '/ews/notifications/:id/played', f: 'ews', a: W },
 
   { m: 'PUT', p: '/ews/roster/status', f: 'roster_operator', a: W },
+  { m: 'PUT', p: '/ews/roster/half-day', f: 'roster_operator', a: W },
   { m: 'PUT', p: '/ews/roster/config/workday', f: 'roster_operator', a: W },
   { m: 'PUT', p: '/ews/roster/group', f: 'roster_operator', a: W },
   { m: 'POST', p: '/ews/roster/generate', f: 'roster_operator', a: W },

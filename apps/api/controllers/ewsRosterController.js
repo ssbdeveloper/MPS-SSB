@@ -34,7 +34,7 @@ async function getRoster(req, res) {
         GROUP BY 1
       )
       SELECT r.serialnumber, u.full_name AS operator_name, r.eff_shift AS scheduled_shift, r.eff_std AS scheduled_standard_hours,
-             r.status, r.source, r.updated_by,
+             r.status, r.source, r.updated_by, r.half_day,
              COALESCE(lg.recorded, 0)::float AS recorded_hours,
              ((r.business_date + os.end_time
                + CASE WHEN os.crosses_midnight THEN INTERVAL '1 day' ELSE INTERVAL '0' END) AT TIME ZONE $2) <= now() AS completed,
@@ -86,6 +86,33 @@ async function updateStatus(req, res) {
     res.json({ data: result.rows[0] });
   } catch (err) {
     console.error('ews roster status error:', err);
+    res.status(400).json({ error: err.message });
+  }
+}
+
+async function updateHalfDay(req, res) {
+  try {
+    const serialnumber = clampText(req.body?.serialnumber, '', 80);
+    const business_date = req.body?.business_date;
+    const half_day = Boolean(req.body?.half_day);
+    const updated_by = clampText(req.body?.updated_by, 'ews-roster-ui', 120);
+    assertIsoDate(business_date);
+    if (!serialnumber) return res.status(400).json({ error: 'serialnumber is required' });
+
+    const result = await db.query(
+      `
+      UPDATE ews.shift_roster
+      SET half_day = $3, source = 'manual', updated_by = $4, updated_at = now()
+      WHERE serialnumber = $1 AND business_date = $2::date
+      RETURNING serialnumber, business_date::text, half_day, status, source, updated_by
+      `,
+      [serialnumber, business_date, half_day, updated_by]
+    );
+    if (!result.rows.length)
+      return res.status(404).json({ error: 'Roster row not found for that operator/date' });
+    res.json({ data: result.rows[0] });
+  } catch (err) {
+    console.error('ews roster half-day error:', err);
     res.status(400).json({ error: err.message });
   }
 }
@@ -337,6 +364,7 @@ async function listLocks(req, res) {
 module.exports = {
   getRoster,
   updateStatus,
+  updateHalfDay,
   getConfig,
   updateWorkday,
   updateGroup,
