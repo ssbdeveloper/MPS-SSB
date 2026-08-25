@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import {
   AlertCircle,
   AlertTriangle,
@@ -9,6 +10,7 @@ import {
   ChevronRight,
   Clock,
   Cpu,
+  Download,
   Factory,
   Info,
   Loader2,
@@ -246,6 +248,7 @@ function ReconciliationPanel() {
   const [error, setError] = useState(null);
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   const [day, setDay] = useState(null);
   const [dayData, setDayData] = useState(null);
@@ -295,6 +298,36 @@ function ReconciliationPanel() {
     return () => c.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleExport = useCallback(async () => {
+    if (!from || !to) {
+      toast.warning('Pick From and To dates first.');
+      return;
+    }
+    setExporting(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/dashboard/sap-reconciliation-export?from=${from}&to=${to}`
+      );
+      if (!res.ok) {
+        const p = await res.json().catch(() => ({}));
+        throw new Error(p.error || `HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const a = document.createElement('a');
+      const url = URL.createObjectURL(blob);
+      a.href = url;
+      a.download = `sap_reconciliation_${from}_to_${to}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error('Export failed', { description: err.message });
+    } finally {
+      setExporting(false);
+    }
+  }, [from, to]);
 
   const pollOps = useCallback(async () => {
     try {
@@ -461,6 +494,16 @@ function ReconciliationPanel() {
           }}
           className="flex items-end gap-2"
         >
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting || !from || !to}
+            title="Export reconciliation to Excel"
+            className="flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition-all hover:bg-slate-50 active:scale-95 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00b4d8]"
+          >
+            {exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}{' '}
+            Export
+          </button>
           <label className="flex flex-col text-[11px] font-semibold text-slate-500">
             From
             <input
@@ -525,7 +568,9 @@ function ReconciliationPanel() {
                   label="Machine hours"
                   hours={f.mch_clamped_hrs}
                   tone="blue"
-                />
+                >
+                  {f.cap_cut_hrs > 0.01 && <>cut {fmtDur(f.cap_cut_hrs)} by max record rule</>}
+                </StepCard>
                 <ArrowRight
                   size={18}
                   className="mx-auto hidden flex-shrink-0 text-slate-300 sm:block"
@@ -617,6 +662,9 @@ function ReconciliationPanel() {
                       >
                         <th className="px-4 py-2 font-semibold">Date</th>
                         <th className="px-3 py-2 text-right font-semibold">Machine hrs</th>
+                        <th className="px-3 py-2 text-right font-semibold text-amber-700">
+                          Cut (max record)
+                        </th>
                         <th className="px-3 py-2 text-right font-semibold text-emerald-700">
                           Posted
                         </th>
@@ -657,6 +705,12 @@ function ReconciliationPanel() {
                             <td className="px-3 py-2.5 text-right tabular-nums text-slate-700">
                               {fmtDur(r.mch_clamped_hrs)}
                             </td>
+                            <td
+                              className="px-3 py-2.5 text-right tabular-nums"
+                              style={{ color: r.cap_cut_hrs > 0.05 ? '#d97706' : '#cbd5e1' }}
+                            >
+                              {r.cap_cut_hrs > 0.05 ? fmtDur(r.cap_cut_hrs) : '·'}
+                            </td>
                             <td className="px-3 py-2.5 text-right font-semibold tabular-nums text-emerald-700">
                               {r.posted_hrs > 0 ? fmtDur(r.posted_hrs) : '·'}
                             </td>
@@ -674,7 +728,7 @@ function ReconciliationPanel() {
                       })}
                       {(data.by_date || []).length === 0 && (
                         <tr>
-                          <td colSpan={5} className="px-3 py-8 text-center text-sm text-slate-400">
+                          <td colSpan={6} className="px-3 py-8 text-center text-sm text-slate-400">
                             No data in this range.
                           </td>
                         </tr>
@@ -726,6 +780,7 @@ function ReconciliationPanel() {
                         <th className="px-3 py-2 font-semibold">Type</th>
                         <th className="px-3 py-2 font-semibold">Machine</th>
                         <th className="px-3 py-2 text-right font-semibold">Machine hrs</th>
+                        <th className="px-3 py-2 text-right font-semibold text-amber-700">Cut</th>
                         <th className="px-3 py-2 text-right font-semibold">Sent</th>
                         <th className="px-3 py-2 font-semibold">Status</th>
                         <th className="px-2 py-2 font-semibold" />
@@ -769,7 +824,7 @@ function ReconciliationPanel() {
                                 </div>
                               </div>
                             </td>
-                            <td colSpan={4} className="px-3 py-2.5 text-right text-[11px]">
+                            <td colSpan={5} className="px-3 py-2.5 text-right text-[11px]">
                               <span className="text-slate-400">machine </span>
                               <span className="font-bold tabular-nums text-slate-700">
                                 {fmtDur(g.source_hrs)}
@@ -851,6 +906,18 @@ function ReconciliationPanel() {
                                       />
                                     )}
                                   </td>
+                                  <td
+                                    className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums"
+                                    style={{
+                                      color: Number(b.cap_cut_hrs || 0) > 0.02
+                                        ? '#d97706'
+                                        : '#cbd5e1',
+                                    }}
+                                  >
+                                    {Number(b.cap_cut_hrs || 0) > 0.02
+                                      ? fmtDur(b.cap_cut_hrs)
+                                      : '·'}
+                                  </td>
                                   <td className="px-3 py-2.5 text-right tabular-nums">
                                     <span
                                       className={
@@ -882,9 +949,9 @@ function ReconciliationPanel() {
                     {dayGroups.length === 0 && (
                       <tbody>
                         <tr>
-                          <td colSpan={10} className="px-3 py-8 text-center text-sm text-slate-400">
-                            No confirmations{dayFilter !== 'all' ? ' for this filter' : ''} on this
-                            date.
+                          <td colSpan={11} className="px-3 py-8 text-center text-sm text-slate-400">
+                            No confirmations
+                            {dayFilter !== 'all' ? ' for this filter' : ''} on this date.
                           </td>
                         </tr>
                       </tbody>
@@ -1018,6 +1085,16 @@ function ReconciliationPanel() {
                                 ) : trimmed ? (
                                   <span className="text-[10px] text-slate-400">trimmed</span>
                                 ) : null}
+                                {Number(m.cap_cut_hrs || 0) > 0.02 && (
+                                  <span
+                                    title="Trimmed by the max record duration rule"
+                                    className={`inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ${
+                                      m.is_stuck || trimmed ? 'ml-1' : ''
+                                    }`}
+                                  >
+                                    cap cut {fmtDur(m.cap_cut_hrs)}
+                                  </span>
+                                )}
                               </td>
                             </tr>
                           );
