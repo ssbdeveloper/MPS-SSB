@@ -46,8 +46,10 @@ const uploadMem = multer({
 router.get('/standard', controller.getSowStandard);
 
 router.get('/standard/grouped', controller.getSowStandardGrouped);
+router.get('/standard/download', controller.downloadSowStandard);
 router.get('/standard/component/:component_id', controller.getSowStandardByComponent);
 router.get('/standard/component/:component_id/templates', controller.getSowTemplatesByComponent);
+router.put('/standard/component/:component_id', controller.updateSowStandardComponent);
 router.delete('/standard/component/:component_id', controller.deleteSowStandardComponent);
 router.post('/templates', controller.createTemplate);
 router.put('/templates/:templateId', controller.updateTemplate);
