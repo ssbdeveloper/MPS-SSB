@@ -71,6 +71,22 @@ def plant_code() -> str:
     return env_value("PLANT_SSB")
 
 
+def normalize_max_record_minutes(raw) -> dict:
+    if isinstance(raw, dict):
+        result = {}
+        for key in ("va", "nnva", "nva"):
+            try:
+                result[key] = max(1, int(raw.get(key) or 90))
+            except (TypeError, ValueError):
+                result[key] = 90
+        return result
+    try:
+        value = max(1, int(raw or 90))
+    except (TypeError, ValueError):
+        value = 90
+    return {"va": value, "nnva": value, "nva": value}
+
+
 def load_sap_rules(conn) -> dict:
 
     DEFAULT_RULES = {
@@ -80,7 +96,7 @@ def load_sap_rules(conn) -> dict:
             {"start": "18:30", "end": "19:00", "days": [6, 0]},
             {"start": "22:00", "end": "22:30", "days": [6, 0]},
         ],
-        "max_record_minutes": 90,
+        "max_record_minutes": {"va": 90, "nnva": 90, "nva": 90},
     }
     try:
         with conn.cursor() as cur:
@@ -91,10 +107,9 @@ def load_sap_rules(conn) -> dict:
         rules.update({k: v for k, v in raw.items() if v is not None})
         if not isinstance(rules.get("break_windows"), list):
             rules["break_windows"] = list(DEFAULT_RULES["break_windows"])
-        try:
-            rules["max_record_minutes"] = max(1, int(rules.get("max_record_minutes") or 90))
-        except (TypeError, ValueError):
-            rules["max_record_minutes"] = DEFAULT_RULES["max_record_minutes"]
+        rules["max_record_minutes"] = normalize_max_record_minutes(
+            rules.get("max_record_minutes", 90)
+        )
         return rules
     except Exception as exc:
         logging.getLogger("sap_staging").warning("load_sap_rules fallback ke default (%s)", exc)
@@ -110,7 +125,7 @@ def load_sap_rules_default() -> dict:
             {"start": "18:30", "end": "19:00", "days": [6, 0]},
             {"start": "22:00", "end": "22:30", "days": [6, 0]},
         ],
-        "max_record_minutes": 90,
+        "max_record_minutes": {"va": 90, "nnva": 90, "nva": 90},
     }
 
 
