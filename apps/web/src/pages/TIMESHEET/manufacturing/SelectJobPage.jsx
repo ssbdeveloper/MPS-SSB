@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Loader2, Lock, MapPin, RefreshCw, Search, Settings2, Unlock, X } from 'lucide-react';
 import { toast } from 'sonner';
@@ -100,6 +100,10 @@ export default function ManufacturingSelectJobPage() {
   const [nfcVerifying, setNfcVerifying] = useState(false);
   const [areaDraft, setAreaDraft] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
+  const [verifyMode, setVerifyMode] = useState(() => sessionStorage.getItem('scanMode') || 'internal');
+  const nfcReaderRef = useRef(null);
+  const verifyNfcForemanRef = useRef(null);
+  const proceedAfterVerifyRef = useRef(null);
   const [expandedProjects, setExpandedProjects] = useState(new Set());
   const [expandedUnits, setExpandedUnits] = useState(new Set());
 
@@ -223,6 +227,79 @@ export default function ManufacturingSelectJobPage() {
     }
   };
 
+  const extractNfcId = (event) => {
+    if (event.serialNumber?.trim()) return normalizeNfcId(event.serialNumber);
+    for (const record of event.message?.records || []) {
+      if (record.recordType === 'text') {
+        try {
+          return normalizeNfcId(new TextDecoder(record.encoding || 'utf-8').decode(record.data));
+        } catch (e) {
+          console.error('Error decoding NFC record:', e);
+        }
+      }
+    }
+    return '';
+  };
+
+  const stopNfcVerifier = useCallback(() => {
+    const reader = nfcReaderRef.current;
+    if (reader) {
+      reader.onreading = null;
+      reader.onerror = null;
+      reader.stop?.();
+      nfcReaderRef.current = null;
+    }
+  }, []);
+
+  const startNfcVerifier = useCallback(() => {
+    stopNfcVerifier();
+    if (verifyMode !== 'internal' || deviceModal !== 'nfc') return;
+    if (!('NDEFReader' in window)) {
+      setNfcError('Browser tidak mendukung Web NFC — gunakan mode Eksternal.');
+      return;
+    }
+    try {
+      const reader = new window.NDEFReader();
+      let lastReadTime = 0;
+      reader.onreading = (event) => {
+        const now = Date.now();
+        if (now - lastReadTime < 1500) return;
+        lastReadTime = now;
+        const id = extractNfcId(event);
+        if (!id) {
+          setNfcError('NFC ID tidak terbaca');
+          return;
+        }
+        setNfcInput(id);
+        setNfcError('');
+        verifyNfcForemanRef.current?.(id).then((ok) => { if (ok) proceedAfterVerifyRef.current?.(); });
+      };
+      reader.onerror = () => setNfcError('Error membaca NFC — tap kartu lagi');
+      reader.scan().catch(() => setNfcError('Akses NFC ditolak atau gagal memulai scan'));
+      nfcReaderRef.current = reader;
+    } catch (err) {
+      console.error('NFC Scan Error:', err);
+      setNfcError('Gagal mengaktifkan scan NFC');
+    }
+  }, [verifyMode, deviceModal, stopNfcVerifier]);
+
+  useEffect(() => {
+    if (deviceModal === 'nfc' && verifyMode === 'internal') {
+      startNfcVerifier();
+    } else {
+      stopNfcVerifier();
+    }
+    return stopNfcVerifier;
+  }, [deviceModal, verifyMode, startNfcVerifier, stopNfcVerifier]);
+
+  const toggleVerifyMode = (checked) => {
+    const newMode = checked ? 'external' : 'internal';
+    setVerifyMode(newMode);
+    sessionStorage.setItem('scanMode', newMode);
+    setNfcInput('');
+    setNfcError('');
+  };
+
   const guardDeviceChange = (apply) => {
     setPendingChange({ apply });
     setNfcInput('');
@@ -241,10 +318,7 @@ export default function ManufacturingSelectJobPage() {
     guardDeviceChange(applyResetDeviceArea);
   };
 
-  const submitNfc = async (event) => {
-    event.preventDefault();
-    const ok = await verifyNfcForeman(nfcInput);
-    if (!ok) return;
+  const proceedAfterVerify = () => {
     const change = pendingChange;
     if (change?.apply) {
       setPendingChange(null);
@@ -255,6 +329,16 @@ export default function ManufacturingSelectJobPage() {
     setAreaDraft(deviceAreaCode || '');
     setDeviceModal('area');
   };
+
+  const submitNfc = async (event) => {
+    event.preventDefault();
+    const ok = await verifyNfcForeman(nfcInput);
+    if (!ok) return;
+    proceedAfterVerifyRef.current?.();
+  };
+
+  verifyNfcForemanRef.current = verifyNfcForeman;
+  proceedAfterVerifyRef.current = proceedAfterVerify;
 
   const saveArea = () => {
     applyAreaChange(areaDraft);
@@ -568,7 +652,11 @@ export default function ManufacturingSelectJobPage() {
                   </span>
                   <div>
                     <h2 className="text-sm font-extrabold text-slate-800">Verifikasi Foreman</h2>
-                    <p className="text-[11px] font-semibold text-slate-500">Scan atau ketik NFC ID foreman</p>
+                    <p className="text-[11px] font-semibold text-slate-500">
+                      {verifyMode === 'internal'
+                        ? 'Dekatkan kartu foreman ke NFC reader'
+                        : 'Scan atau ketik NFC ID foreman'}
+                    </p>
                   </div>
                 </div>
                 <button
@@ -581,13 +669,33 @@ export default function ManufacturingSelectJobPage() {
                 </button>
               </div>
 
+              {}
+              <label className="mt-4 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5">
+                <span className="text-xs font-bold text-slate-700">
+                  {verifyMode === 'internal' ? 'Internal — scan NFC' : 'Eksternal — scanner / manual'}
+                </span>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={verifyMode === 'external'}
+                  onClick={() => toggleVerifyMode(verifyMode !== 'external')}
+                  className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${verifyMode === 'external' ? 'bg-[#0096c7]' : 'bg-slate-300'}`}
+                >
+                  <span
+                    className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                      verifyMode === 'external' ? 'translate-x-5' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </label>
+
               <input
                 type="text"
                 value={nfcInput}
                 onChange={(event) => { setNfcInput(event.target.value); setNfcError(''); }}
                 placeholder="NFC ID"
                 autoFocus
-                className={`mt-5 w-full ${inputClass}`}
+                className={`mt-3 w-full ${inputClass}`}
               />
 
               {nfcError && (
