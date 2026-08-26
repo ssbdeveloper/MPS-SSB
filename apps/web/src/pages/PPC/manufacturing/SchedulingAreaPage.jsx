@@ -39,8 +39,8 @@ import BayReservationTimeline from './BayReservationTimeline';
 
 const DEFAULT_RANGE_DAYS = 7;
 const MAX_RANGE_DAYS = 90;
-const WINDOW_BACK_DAYS = 180;
-const WINDOW_FORWARD_DAYS = 365;
+const WINDOW_BACK_DAYS = 90;
+const WINDOW_FORWARD_DAYS = 120;
 const RANGE_PRESETS = [7, 14, 30];
 
 const DATE_INPUT_RE = /^\d{4}-\d{2}-\d{2}$/;

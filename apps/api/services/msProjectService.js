@@ -2356,7 +2356,12 @@ async function listBaySchedules(query = {}) {
   return { rows: result.rows, limit, offset };
 }
 
+let lastSyncAt = 0;
+const SYNC_INTERVAL_MS = 10 * 60 * 1000;
 async function syncBayScheduleDates() {
+  const now = Date.now();
+  if (now - lastSyncAt < SYNC_INTERVAL_MS) return 0;
+  lastSyncAt = now;
   const result = await pool().query(
     `update ms_project_bay_schedule s
      set start_date = (t.plan_start at time zone 'Asia/Jakarta')::date,

@@ -23,6 +23,31 @@ export function buildAreaReservations(schedulesByBay, area) {
   return [...seen.values()].sort((a, b) => String(a.start_date).localeCompare(String(b.start_date)));
 }
 
+export function groupAreaOrders(reservations) {
+  const map = new Map();
+  for (const r of reservations || []) {
+    const key = String(r.order_no || r.purpose || r.schedule_id || '');
+    if (!key) continue;
+    const ex = map.get(key);
+    if (ex) {
+      ex.count += 1;
+      if (String(r.start_date) < ex.start_date) ex.start_date = String(r.start_date);
+      if (String(r.end_date) > ex.end_date) ex.end_date = String(r.end_date);
+    } else {
+      map.set(key, {
+        key,
+        order_no: r.order_no || null,
+        purpose: r.purpose || null,
+        project_name: r.project_name || r.part_name || null,
+        count: 1,
+        start_date: String(r.start_date),
+        end_date: String(r.end_date),
+      });
+    }
+  }
+  return [...map.values()].sort((a, b) => a.start_date.localeCompare(b.start_date));
+}
+
 export {
   BAY_ZONES, ZONE_BY_KEY, bayCode, bayLabel, splitBayCode, zoneOrderFor, isZonedArea,
 } from '../../config/manufacturingAreas';
