@@ -2411,8 +2411,12 @@ async function listBayScheduleTasks(query = {}) {
     where.push(`s.start_date <= $${values.length}::date`);
   }
   if (!startDate && !endDate) {
-    where.push('current_date between s.start_date and s.end_date');
+    where.push("current_date between s.start_date and s.end_date");
   }
+  where.push(`(
+    s.task_id is null
+    or (coalesce(t.actual_progress, 0) < 100 and not coalesce(ph.is_teco, false))
+  )`);
   if (q) {
     values.push(`%${q.toLowerCase()}%`);
     where.push(`(
@@ -2466,6 +2470,11 @@ async function listBayScheduleTasks(query = {}) {
        -- Nama project untuk group header (order-level: task NULL → pakai project_id dari schedule).
        left join ms_project mp
        on mp.project_id = coalesce(t.project_id, s.project_id)
+       left join lateral (
+         select bool_or(upper(coalesce(k.order_description, '')) = 'TECO') as is_teco
+         from ph3_order k
+         where ltrim(k.order_no, '0') = ltrim(s.order_no, '0')
+       ) ph on true
        -- Grouping job per "Unit": naikkan rantai parent sampai summary yang namanya mengandung
        -- 'unit' (mis. "UNIT 1", "UNIT 01"). Kalau tidak ada (project berbasis proses seperti
        -- FABRICATION/BLASTING), unit_name NULL → FE menampilkan bucket "No Unit".

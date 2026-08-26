@@ -1,34 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-  AlertTriangle,
-  ChevronDown,
-  ChevronRight,
-  ChevronUp,
-  ClipboardList,
-  Loader2,
-  Lock,
-  MapPin,
-  RefreshCw,
-  Search,
-  Settings2,
-  Unlock,
-  X,
-} from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, ChevronUp, ClipboardList, Loader2, Lock, MapPin, RefreshCw, Search, Settings2, Unlock, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { goBackOrFallback } from '../../../utils/navigation';
 import { normalizeNfcId } from '../../../utils/nfcId';
-import {
-  AREA_OPTIONS,
-  BLASTING_AREA_CODE,
-  bayCodesOf,
-  bayLabel,
-} from '../../../config/manufacturingAreas';
+import { AREA_OPTIONS, BLASTING_AREA_CODE } from '../../../config/manufacturingAreas';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 const AREA_STORAGE_KEY = 'mps.manufacturing.timesheet.deviceArea';
-const BAY_STORAGE_KEY = 'mps.manufacturing.timesheet.selectedBay';
-
 const FOREMAN_ROLE = 'FOREMAN';
 
 function readStoredValue(key) {
@@ -60,28 +39,23 @@ function readSessionWorkcenter() {
   try {
     const directWorkcenter = sessionStorage.getItem('workcenter');
     if (directWorkcenter) return directWorkcenter.trim();
-  } catch {}
+  } catch {
+  }
 
   const employee = readSessionJson('datakaryawan');
   return String(employee?.workcenter || employee?.workcentercode || '').trim();
 }
 
 function sameWorkcenter(left, right) {
-  return (
-    String(left || '')
-      .trim()
-      .toUpperCase() ===
-    String(right || '')
-      .trim()
-      .toUpperCase()
-  );
+  return String(left || '').trim().toUpperCase() === String(right || '').trim().toUpperCase();
 }
 
 function writeStoredValue(key, value) {
   try {
     if (value) localStorage.setItem(key, value);
     else localStorage.removeItem(key);
-  } catch {}
+  } catch {
+  }
 }
 
 function apiUrl(path, params = {}) {
@@ -114,7 +88,6 @@ function isOrderLevelJob(job) {
 export default function ManufacturingSelectJobPage() {
   const navigate = useNavigate();
   const [deviceAreaCode, setDeviceAreaCode] = useState(() => readStoredDeviceArea());
-  const [selectedBay, setSelectedBay] = useState(() => readStoredValue(BAY_STORAGE_KEY));
   const [sessionWorkcenter, setSessionWorkcenter] = useState(() => readSessionWorkcenter());
   const [searchText, setSearchText] = useState('');
   const [jobs, setJobs] = useState([]);
@@ -127,7 +100,6 @@ export default function ManufacturingSelectJobPage() {
   const [nfcVerifying, setNfcVerifying] = useState(false);
   const [areaDraft, setAreaDraft] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
-
   const [expandedProjects, setExpandedProjects] = useState(new Set());
   const [expandedUnits, setExpandedUnits] = useState(new Set());
 
@@ -136,92 +108,77 @@ export default function ManufacturingSelectJobPage() {
     [deviceAreaCode]
   );
 
-  useEffect(() => {
-    if (!selectedArea || !bayCodesOf(selectedArea.areaCode).includes(selectedBay)) {
-      setSelectedBay('');
-      writeStoredValue(BAY_STORAGE_KEY, '');
-      setJobs([]);
+  const weekBounds = useMemo(() => {
+    const now = new Date();
+    const dayOffset = (now.getDay() + 6) % 7;
+    const monday = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() - dayOffset));
+    const toISO = (d) => d.toISOString().slice(0, 10);
+    return {
+      start: toISO(new Date(monday.getTime() - 11 * 7 * 86400000)),
+      end: toISO(new Date(monday.getTime() + 6 * 86400000)),
+    };
+  }, []);
+
+  const loadJobs = useCallback(async (searchOverride) => {
+    if (!deviceAreaCode) {
+      toast.warning('Pilih area device terlebih dahulu');
+      return;
     }
-  }, [selectedArea, selectedBay]);
+    const currentWorkcenter = readSessionWorkcenter();
+    setSessionWorkcenter(currentWorkcenter);
+    if (!currentWorkcenter) {
+      setJobs([]);
+      toast.warning('Workcenter operator tidak ditemukan di session');
+      return;
+    }
 
-  const loadJobs = useCallback(
-    async (searchOverride) => {
-      if (!deviceAreaCode) {
-        toast.warning('Pilih area device terlebih dahulu');
-        return;
-      }
-      if (!selectedBay) {
-        toast.warning('Pilih bay terlebih dahulu');
-        return;
-      }
-      const currentWorkcenter = readSessionWorkcenter();
-      setSessionWorkcenter(currentWorkcenter);
-      if (!currentWorkcenter) {
-        setJobs([]);
-        toast.warning('Workcenter operator tidak ditemukan di session');
-        return;
-      }
+    setLoading(true);
+    try {
+      const response = await fetch(apiUrl('/ms-project/bay-schedule-tasks', {
+        area_code: deviceAreaCode,
+        workcenter: currentWorkcenter,
+        start_date: weekBounds.start,
+        end_date: weekBounds.end,
+        q: searchOverride ?? searchText,
+      }));
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
 
-      setLoading(true);
-      try {
-        const response = await fetch(
-          apiUrl('/ms-project/bay-schedule-tasks', {
-            area_code: deviceAreaCode,
-            bay_code: selectedBay,
-            workcenter: currentWorkcenter,
-            q: searchOverride ?? searchText,
-          })
-        );
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
-
-        const rows = (payload.data || []).filter(
-          (job) => isOrderLevelJob(job) || sameWorkcenter(job.workcenter, currentWorkcenter)
-        );
-        setJobs(rows);
-        setExpandedProjects(new Set());
-        setExpandedUnits(new Set());
-        if (!rows.length) {
-          toast.info('Tidak ada task aktif untuk area, bay, dan workcenter ini');
-        }
-      } catch (error) {
-        console.error('Failed to load manufacturing jobs:', error);
-        setJobs([]);
-        toast.error('Gagal load task manufacturing', { description: error.message });
-      } finally {
-        setLoading(false);
+      const rows = (payload.data || []).filter(
+        (job) => isOrderLevelJob(job) || sameWorkcenter(job.workcenter, currentWorkcenter)
+      );
+      setJobs(rows);
+      setExpandedProjects(new Set());
+      setExpandedUnits(new Set());
+      if (!rows.length) {
+        toast.info('Tidak ada task untuk area dan workcenter ini (window minggu ini ke belakang)');
       }
-    },
-    [deviceAreaCode, searchText, selectedBay]
-  );
+    } catch (error) {
+      console.error('Failed to load manufacturing jobs:', error);
+      setJobs([]);
+      toast.error('Gagal load task manufacturing', { description: error.message });
+    } finally {
+      setLoading(false);
+    }
+  }, [deviceAreaCode, searchText, weekBounds]);
 
   useEffect(() => {
-    if (deviceAreaCode && selectedBay) {
+    if (deviceAreaCode) {
       loadJobs('');
     }
-  }, [deviceAreaCode, selectedBay]);
+  }, [deviceAreaCode]);
 
   const applyAreaChange = (nextArea) => {
     setDeviceAreaCode(nextArea);
-    setSelectedBay('');
     setJobs([]);
     writeStoredValue(AREA_STORAGE_KEY, nextArea);
-    writeStoredValue(BAY_STORAGE_KEY, '');
     if (nextArea) toast.success(`Area device disimpan: ${nextArea}`);
-  };
-
-  const applyBayChange = (nextBay) => {
-    setSelectedBay(nextBay);
-    setJobs([]);
-    writeStoredValue(BAY_STORAGE_KEY, nextBay);
   };
 
   const applyResetDeviceArea = () => {
     setDeviceAreaCode('');
-    setSelectedBay('');
     setJobs([]);
     writeStoredValue(AREA_STORAGE_KEY, '');
-    writeStoredValue(BAY_STORAGE_KEY, '');
     toast.info('Setting area device dihapus');
   };
 
@@ -236,9 +193,7 @@ export default function ManufacturingSelectJobPage() {
       const res = await fetch(`${API_BASE}/usernfc/nfcid/${encodeURIComponent(nfcid)}`);
       if (res.status === 409) {
         const dup = await res.json().catch(() => null);
-        setNfcError(
-          dup?.message || 'Kartu ini terdaftar atas lebih dari satu orang. Hubungi admin.'
-        );
+        setNfcError(dup?.message || 'Kartu ini terdaftar atas lebih dari satu orang. Hubungi admin.');
         return false;
       }
       if (!res.ok) {
@@ -254,11 +209,7 @@ export default function ManufacturingSelectJobPage() {
         setNfcError('Kartu nonaktif');
         return false;
       }
-      if (
-        !String(row.roles || '')
-          .toUpperCase()
-          .includes(FOREMAN_ROLE)
-      ) {
+      if (!String(row.roles || '').toUpperCase().includes(FOREMAN_ROLE)) {
         setNfcError('Akses ditolak — hanya foreman yang bisa mengubah device area');
         return false;
       }
@@ -277,10 +228,6 @@ export default function ManufacturingSelectJobPage() {
     setNfcInput('');
     setNfcError('');
     setDeviceModal('nfc');
-  };
-
-  const handleBayChange = (event) => {
-    applyBayChange(event.target.value);
   };
 
   const openGear = () => {
@@ -305,7 +252,6 @@ export default function ManufacturingSelectJobPage() {
       change.apply();
       return;
     }
-
     setAreaDraft(deviceAreaCode || '');
     setDeviceModal('area');
   };
@@ -371,7 +317,7 @@ export default function ManufacturingSelectJobPage() {
       workcenter: job.workcenter,
       manufacturing_area_code: job.area_code,
       manufacturing_area_name: job.area_name,
-      manufacturing_bay_code: selectedBay,
+      manufacturing_bay_code: job.bay_codes?.[0] || '',
       manufacturing_bay_codes: job.bay_codes,
       schedule_id: job.schedule_id,
       task_id: job.task_id,
@@ -388,12 +334,9 @@ export default function ManufacturingSelectJobPage() {
     if (event.key === 'Enter') loadJobs();
   };
 
-  const btnOutline =
-    'inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 transition-all hover:border-slate-300 hover:bg-slate-50 active:scale-95';
-  const btnPrimary =
-    'inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg bg-[#0096c7] px-4 py-1.5 text-xs font-bold text-white transition-all hover:bg-[#0077b6] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50';
-  const inputClass =
-    'min-h-[44px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 transition-all focus:border-[#0096c7] focus:outline-none focus:ring-2 focus:ring-[#00b4d8]';
+  const btnOutline = 'inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-700 transition-all hover:border-slate-300 hover:bg-slate-50 active:scale-95';
+  const btnPrimary = 'inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg bg-[#0096c7] px-4 py-1.5 text-xs font-bold text-white transition-all hover:bg-[#0077b6] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50';
+  const inputClass = 'min-h-[44px] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder-slate-400 transition-all focus:border-[#0096c7] focus:outline-none focus:ring-2 focus:ring-[#00b4d8]';
   const cellBase = 'px-3 py-2 text-[11px] align-middle';
 
   return (
@@ -404,20 +347,10 @@ export default function ManufacturingSelectJobPage() {
         </button>
         <h1 className="text-sm font-extrabold text-slate-800">Manufacturing Job Selection</h1>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={openGear}
-            className={btnOutline}
-            title="Ubah device area (foreman)"
-          >
+          <button type="button" onClick={openGear} className={btnOutline} title="Ubah device area (foreman)">
             <Settings2 size={14} />
           </button>
-          <button
-            type="button"
-            onClick={() => loadJobs()}
-            disabled={loading}
-            className={btnOutline}
-          >
+          <button type="button" onClick={() => loadJobs()} disabled={loading} className={btnOutline}>
             <RefreshCw size={14} />
             Refresh
           </button>
@@ -435,36 +368,12 @@ export default function ManufacturingSelectJobPage() {
             <Search size={13} className="text-[#0096c7]" />
             Filter
           </span>
-          {filterOpen ? (
-            <ChevronUp size={15} className="text-slate-400" />
-          ) : (
-            <ChevronDown size={15} className="text-slate-400" />
-          )}
+          {filterOpen ? <ChevronUp size={15} className="text-slate-400" /> : <ChevronDown size={15} className="text-slate-400" />}
         </button>
 
         {filterOpen && (
           <div className="px-4 pb-3">
-            <div className="grid gap-3 md:grid-cols-[minmax(150px,190px)_minmax(0,1fr)_auto_auto]">
-              <label className="grid gap-1 text-xs font-bold text-slate-700">
-                <span className="inline-flex items-center gap-1.5">
-                  <MapPin size={14} className="text-[#0096c7]" />
-                  Bay
-                </span>
-                <select
-                  value={selectedBay}
-                  onChange={handleBayChange}
-                  disabled={!selectedArea}
-                  className={`${inputClass} disabled:cursor-not-allowed disabled:bg-slate-50 disabled:opacity-60`}
-                >
-                  <option value="">Pilih bay</option>
-                  {(selectedArea ? bayCodesOf(selectedArea.areaCode) : []).map((code) => (
-                    <option key={code} value={code}>
-                      {bayLabel(code)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto_auto]">
               <label className="grid gap-1 text-xs font-bold text-slate-700">
                 <span className="inline-flex items-center gap-1.5">
                   <Search size={14} className="text-[#0096c7]" />
@@ -480,22 +389,12 @@ export default function ManufacturingSelectJobPage() {
                 />
               </label>
 
-              <button
-                type="button"
-                onClick={() => loadJobs()}
-                disabled={loading}
-                className={`${btnPrimary} mt-5 md:mt-[18px]`}
-              >
+              <button type="button" onClick={() => loadJobs()} disabled={loading} className={`${btnPrimary} mt-5 md:mt-[18px]`}>
                 <Search size={14} />
                 {loading ? 'Loading' : 'Search'}
               </button>
 
-              <button
-                type="button"
-                onClick={resetDeviceArea}
-                disabled={!deviceAreaCode}
-                className={`${btnOutline} mt-5 md:mt-[18px] disabled:cursor-not-allowed disabled:opacity-40`}
-              >
+              <button type="button" onClick={resetDeviceArea} disabled={!deviceAreaCode} className={`${btnOutline} mt-5 md:mt-[18px] disabled:cursor-not-allowed disabled:opacity-40`}>
                 <X size={14} />
                 Reset
               </button>
@@ -503,16 +402,11 @@ export default function ManufacturingSelectJobPage() {
 
             <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold text-slate-500">
               <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">
-                Area tersimpan:{' '}
-                {selectedArea
-                  ? `${selectedArea.areaCode} - ${selectedArea.areaName}`
-                  : 'Belum diset'}
+                Area tersimpan: {selectedArea ? `${selectedArea.areaCode} - ${selectedArea.areaName}` : 'Belum diset'}
               </span>
-              {selectedBay && (
-                <span className="rounded-full border border-[#90e0ef] bg-[#caf0f8] px-2 py-1 text-[#0077b6]">
-                  Bay aktif: {selectedBay}
-                </span>
-              )}
+              <span className="rounded-full border border-[#90e0ef] bg-[#caf0f8] px-2 py-1 text-[#0077b6]">
+                Window: minggu ini + 11 minggu ke belakang
+              </span>
               <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-emerald-700">
                 Workcenter session: {sessionWorkcenter || 'Tidak ada'}
               </span>
@@ -534,10 +428,7 @@ export default function ManufacturingSelectJobPage() {
           </colgroup>
 
           <thead className="sticky top-0 z-10">
-            <tr
-              className="border-b-2"
-              style={{ background: '#caf0f8', borderBottomColor: '#90e0ef' }}
-            >
+            <tr className="border-b-2" style={{ background: '#caf0f8', borderBottomColor: '#90e0ef' }}>
               <th className={`${cellBase} text-center font-semibold text-slate-700`}>Order</th>
               <th className={`${cellBase} text-left font-semibold text-slate-700`}>Task</th>
               <th className={`${cellBase} text-center font-semibold text-slate-700`}>Operation</th>
@@ -557,9 +448,9 @@ export default function ManufacturingSelectJobPage() {
                       <ClipboardList size={22} />
                     </span>
                     <span className="text-sm font-semibold text-slate-500">
-                      {deviceAreaCode && selectedBay
-                        ? 'Tidak ada task schedule untuk area dan bay ini.'
-                        : 'Set area device dan pilih bay terlebih dahulu.'}
+                      {deviceAreaCode
+                        ? 'Tidak ada task schedule untuk area ini (minggu ini ke belakang).'
+                        : 'Set area device terlebih dahulu.'}
                     </span>
                   </div>
                 </td>
@@ -578,11 +469,9 @@ export default function ManufacturingSelectJobPage() {
                     >
                       <td colSpan={7} className="px-3 py-1.5 text-[11px] font-extrabold">
                         <span className="inline-flex items-center gap-1.5">
-                          {projectExpanded ? (
-                            <ChevronDown size={13} className="text-[#0077b6]" />
-                          ) : (
-                            <ChevronRight size={13} className="text-[#0077b6]" />
-                          )}
+                          {projectExpanded
+                            ? <ChevronDown size={13} className="text-[#0077b6]" />
+                            : <ChevronRight size={13} className="text-[#0077b6]" />}
                           <span className="text-slate-800">{project}</span>
                           <span className="rounded-full bg-white/80 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-slate-500">
                             {projectTotal}
@@ -590,103 +479,73 @@ export default function ManufacturingSelectJobPage() {
                         </span>
                       </td>
                     </tr>
-                    {projectExpanded &&
-                      units.map(({ unit, rows }) => {
-                        const unitKey = `${project}|${unit}`;
-                        const unitExpanded = expandedUnits.has(unitKey);
-                        return (
-                          <React.Fragment key={unitKey}>
-                            {}
-                            <tr
-                              onClick={() => toggleUnit(unitKey)}
-                              className="cursor-pointer border-b border-slate-200 hover:bg-[#e8f6fb]"
-                              style={{ background: '#e0f2fe' }}
-                            >
-                              <td colSpan={7} className="px-6 py-1 text-[11px] font-extrabold">
-                                <span className="inline-flex items-center gap-1.5">
-                                  {unitExpanded ? (
-                                    <ChevronDown size={12} className="text-[#0077b6]" />
-                                  ) : (
-                                    <ChevronRight size={12} className="text-[#0077b6]" />
-                                  )}
-                                  <span className="text-[#0077b6]">{unit}</span>
-                                  <span className="rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-slate-500">
-                                    {rows.length}
-                                  </span>
+                    {projectExpanded && units.map(({ unit, rows }) => {
+                      const unitKey = `${project}|${unit}`;
+                      const unitExpanded = expandedUnits.has(unitKey);
+                      return (
+                        <React.Fragment key={unitKey}>
+                          {}
+                          <tr
+                            onClick={() => toggleUnit(unitKey)}
+                            className="cursor-pointer border-b border-slate-200 hover:bg-[#e8f6fb]"
+                            style={{ background: '#e0f2fe' }}
+                          >
+                            <td colSpan={7} className="px-6 py-1 text-[11px] font-extrabold">
+                              <span className="inline-flex items-center gap-1.5">
+                                {unitExpanded
+                                  ? <ChevronDown size={12} className="text-[#0077b6]" />
+                                  : <ChevronRight size={12} className="text-[#0077b6]" />}
+                                <span className="text-[#0077b6]">{unit}</span>
+                                <span className="rounded-full bg-white/70 px-1.5 py-0.5 text-[10px] font-bold tabular-nums text-slate-500">
+                                  {rows.length}
                                 </span>
-                              </td>
-                            </tr>
-                            {unitExpanded &&
-                              rows.map((job, index) => {
-                                const isOrderLevel = isOrderLevelJob(job);
+                              </span>
+                            </td>
+                          </tr>
+                          {unitExpanded && rows.map((job, index) => {
+                      const isOrderLevel = isOrderLevelJob(job);
+                      const isSelected = selectedJob?.schedule_id === job.schedule_id
+                        && selectedJob?.task_id === job.task_id;
+                      const plannedMinutes = Number(job.planned_work_minutes || job.duration_minutes || 0);
 
-                                const isSelected =
-                                  selectedJob?.schedule_id === job.schedule_id &&
-                                  selectedJob?.task_id === job.task_id;
-                                const plannedMinutes = Number(
-                                  job.planned_work_minutes || job.duration_minutes || 0
-                                );
-
-                                return (
-                                  <tr
-                                    key={`${job.schedule_id}-${job.task_id || index}`}
-                                    onClick={() => handleSelectJob(job)}
-                                    className={`${isSelected ? 'bg-[#caf0f8]' : index % 2 === 0 ? 'bg-white' : 'bg-slate-50'} cursor-pointer border-b border-slate-100 transition-colors duration-100 hover:bg-[#ade8f4] active:bg-[#90e0ef]`}
-                                  >
-                                    <td className={`${cellBase} text-center`}>
-                                      <div className="font-mono font-extrabold tabular-nums text-[#0096c7]">
-                                        {job.task_order_no || job.order_no}
-                                      </div>
-                                      <div className="mt-0.5 text-[11px] font-semibold text-slate-500">
-                                        {selectedBay}
-                                      </div>
-                                    </td>
-                                    <td className={`${cellBase} text-left`}>
-                                      {isOrderLevel ? (
-                                        <>
-                                          <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-amber-700">
-                                            <AlertTriangle size={11} />
-                                            Order-level
-                                          </span>
-                                          <div className="mt-1 text-xs font-semibold leading-snug text-amber-700">
-                                            Reservasi tingkat order — task belum ditentukan
-                                          </div>
-                                        </>
-                                      ) : (
-                                        <div className="font-semibold leading-snug text-slate-800">
-                                          {job.task_name || '-'}
-                                        </div>
-                                      )}
-                                    </td>
-                                    <td
-                                      className={`${cellBase} text-center font-mono text-slate-700`}
-                                    >
-                                      {job.operation_no || '-'}
-                                    </td>
-                                    <td
-                                      className={`${cellBase} text-center font-mono text-slate-700`}
-                                    >
-                                      {job.ssbr_id || '-'}
-                                    </td>
-                                    <td
-                                      className={`${cellBase} text-center tabular-nums text-slate-700`}
-                                    >
-                                      {formatHoursFromMinutes(plannedMinutes)}
-                                    </td>
-                                    <td className={`${cellBase} text-center text-slate-700`}>
-                                      {formatDate(job.start_date)} - {formatDate(job.end_date)}
-                                    </td>
-                                    <td
-                                      className={`${cellBase} text-center font-semibold text-slate-800`}
-                                    >
-                                      {job.workcenter || '-'}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
-                          </React.Fragment>
-                        );
-                      })}
+                      return (
+                        <tr
+                          key={`${job.schedule_id}-${job.task_id || index}`}
+                          onClick={() => handleSelectJob(job)}
+                          className={`${isSelected ? 'bg-[#caf0f8]' : index % 2 === 0 ? 'bg-white' : 'bg-slate-50'} cursor-pointer border-b border-slate-100 transition-colors duration-100 hover:bg-[#ade8f4] active:bg-[#90e0ef]`}
+                        >
+                          <td className={`${cellBase} text-center`}>
+                            <div className="font-mono font-extrabold tabular-nums text-[#0096c7]">{job.task_order_no || job.order_no}</div>
+                            <div className="mt-0.5 text-[11px] font-semibold text-slate-500">{(job.bay_codes || []).join(', ')}</div>
+                          </td>
+                          <td className={`${cellBase} text-left`}>
+                            {isOrderLevel ? (
+                              <>
+                                <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-100 px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide text-amber-700">
+                                  <AlertTriangle size={11} />
+                                  Order-level
+                                </span>
+                                <div className="mt-1 text-xs font-semibold leading-snug text-amber-700">
+                                  Reservasi tingkat order — task belum ditentukan
+                                </div>
+                              </>
+                            ) : (
+                              <div className="font-semibold leading-snug text-slate-800">{job.task_name || '-'}</div>
+                            )}
+                          </td>
+                          <td className={`${cellBase} text-center font-mono text-slate-700`}>{job.operation_no || '-'}</td>
+                          <td className={`${cellBase} text-center font-mono text-slate-700`}>{job.ssbr_id || '-'}</td>
+                          <td className={`${cellBase} text-center tabular-nums text-slate-700`}>{formatHoursFromMinutes(plannedMinutes)}</td>
+                          <td className={`${cellBase} text-center text-slate-700`}>
+                            {formatDate(job.start_date)} - {formatDate(job.end_date)}
+                          </td>
+                          <td className={`${cellBase} text-center font-semibold text-slate-800`}>{job.workcenter || '-'}</td>
+                        </tr>
+                      );
+                          })}
+                        </React.Fragment>
+                      );
+                    })}
                   </React.Fragment>
                 );
               })
@@ -709,9 +568,7 @@ export default function ManufacturingSelectJobPage() {
                   </span>
                   <div>
                     <h2 className="text-sm font-extrabold text-slate-800">Verifikasi Foreman</h2>
-                    <p className="text-[11px] font-semibold text-slate-500">
-                      Scan atau ketik NFC ID foreman
-                    </p>
+                    <p className="text-[11px] font-semibold text-slate-500">Scan atau ketik NFC ID foreman</p>
                   </div>
                 </div>
                 <button
@@ -727,31 +584,26 @@ export default function ManufacturingSelectJobPage() {
               <input
                 type="text"
                 value={nfcInput}
-                onChange={(event) => {
-                  setNfcInput(event.target.value);
-                  setNfcError('');
-                }}
+                onChange={(event) => { setNfcInput(event.target.value); setNfcError(''); }}
                 placeholder="NFC ID"
                 autoFocus
                 className={`mt-5 w-full ${inputClass}`}
               />
 
-              {nfcError && <p className="mt-2 text-xs font-semibold text-red-600">{nfcError}</p>}
+              {nfcError && (
+                <p className="mt-2 text-xs font-semibold text-red-600">{nfcError}</p>
+              )}
 
               <div className="mt-5 flex justify-end gap-2">
-                <button type="button" onClick={closeDeviceModal} className={btnOutline}>
+                <button
+                  type="button"
+                  onClick={closeDeviceModal}
+                  className={btnOutline}
+                >
                   Batal
                 </button>
-                <button
-                  type="submit"
-                  disabled={nfcVerifying}
-                  className={`${btnPrimary} disabled:opacity-50`}
-                >
-                  {nfcVerifying ? (
-                    <Loader2 size={14} className="animate-spin" />
-                  ) : (
-                    <Unlock size={14} />
-                  )}
+                <button type="submit" disabled={nfcVerifying} className={`${btnPrimary} disabled:opacity-50`}>
+                  {nfcVerifying ? <Loader2 size={14} className="animate-spin" /> : <Unlock size={14} />}
                   Verifikasi
                 </button>
               </div>
@@ -765,9 +617,7 @@ export default function ManufacturingSelectJobPage() {
                   </span>
                   <div>
                     <h2 className="text-sm font-extrabold text-slate-800">Ubah Device Area</h2>
-                    <p className="text-[11px] font-semibold text-slate-500">
-                      Verifikasi foreman berhasil
-                    </p>
+                    <p className="text-[11px] font-semibold text-slate-500">Verifikasi foreman berhasil</p>
                   </div>
                 </div>
                 <button
@@ -782,11 +632,7 @@ export default function ManufacturingSelectJobPage() {
 
               <label className="mt-5 grid gap-1 text-xs font-bold text-slate-700">
                 <span>Device Area</span>
-                <select
-                  value={areaDraft}
-                  onChange={(event) => setAreaDraft(event.target.value)}
-                  className={inputClass}
-                >
+                <select value={areaDraft} onChange={(event) => setAreaDraft(event.target.value)} className={inputClass}>
                   <option value="">Pilih area</option>
                   {AREA_OPTIONS.map((area) => (
                     <option key={area.areaCode} value={area.areaCode}>
@@ -799,10 +645,7 @@ export default function ManufacturingSelectJobPage() {
               <div className="mt-5 flex items-center justify-between gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    applyResetDeviceArea();
-                    setDeviceModal(null);
-                  }}
+                  onClick={() => { applyResetDeviceArea(); setDeviceModal(null); }}
                   className="text-xs font-bold text-red-600 hover:text-red-700"
                 >
                   Hapus Setting
