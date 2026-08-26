@@ -2458,6 +2458,7 @@ async function listBayScheduleTasks(query = {}) {
        t.planned_work_minutes,
        t.actual_progress,
        t.is_summary,
+       act.actual_hours,
        mp.project_name,
        u.unit_name
        from ms_project_bay_schedule s
@@ -2470,11 +2471,18 @@ async function listBayScheduleTasks(query = {}) {
        -- Nama project untuk group header (order-level: task NULL → pakai project_id dari schedule).
        left join ms_project mp
        on mp.project_id = coalesce(t.project_id, s.project_id)
+       -- Status TECO order SAP (bool_or: kalau salah satu baris ph3_order TECO → hidden).
        left join lateral (
          select bool_or(upper(coalesce(k.order_description, '')) = 'TECO') as is_teco
          from ph3_order k
          where ltrim(k.order_no, '0') = ltrim(s.order_no, '0')
        ) ph on true
+       left join lateral (
+         select coalesce(sum(coalesce(tt.duration, 0)), 0) as actual_hours
+         from timesheet_transaction tt
+         where ltrim(tt.order_no, '0') = ltrim(s.order_no, '0')
+           and tt.duration is not null and tt.duration > 0
+       ) act on true
        -- Grouping job per "Unit": naikkan rantai parent sampai summary yang namanya mengandung
        -- 'unit' (mis. "UNIT 1", "UNIT 01"). Kalau tidak ada (project berbasis proses seperti
        -- FABRICATION/BLASTING), unit_name NULL → FE menampilkan bucket "No Unit".

@@ -3,14 +3,7 @@ import { areaDef, bayCodesOf as bayCodesOfRaw } from '../../config/manufacturing
 
 export const bayCodesOf = bayCodesOfRaw;
 
-export function areaRangeLabel(area) {
-  if (!area) return '';
-  if (area.areaCode === 'AREA-18') return area.areaName || 'Blasting & Painting';
-  const bays = Array.isArray(area.bays) ? area.bays : [];
-  if (bays.length === 0) return area.areaName || area.areaCode || '';
-  if (bays.length === 1) return bays[0];
-  return `${bays[0]}-${bays[bays.length - 1]}`;
-}
+export { areaRangeLabel } from '../../config/manufacturingAreas';
 
 export function buildAreaReservations(schedulesByBay, area) {
   const seen = new Map();

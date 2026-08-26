@@ -22,6 +22,15 @@ export const AREA_OPTIONS = [
 
 export const BLASTING_AREA_CODE = 'AREA-18';
 
+export function areaRangeLabel(area) {
+  if (!area) return '';
+  if (area.areaCode === BLASTING_AREA_CODE) return area.areaName || 'Blasting & Painting';
+  const bays = Array.isArray(area.bays) ? area.bays : [];
+  if (bays.length === 0) return area.areaName || area.areaCode || '';
+  if (bays.length === 1) return bays[0];
+  return `${bays[0]}-${bays[bays.length - 1]}`;
+}
+
 export const BAY_ZONES = [
   { key: 'EDGE', suffix: 'E', label: 'Edge' },
   { key: 'CENTER', suffix: 'C', label: 'Center' },
