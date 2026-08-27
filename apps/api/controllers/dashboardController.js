@@ -1443,6 +1443,19 @@ const CAP_CUT_SECONDS = (va, nnva, nva) => `
     0
   )`;
 
+const END_CAPPED_EXPR = (va, nnva, nva) => `
+  LEAST(
+    COALESCE(m.end_effective, m.enddatetime),
+    m.startdatetime + (CASE
+        WHEN m.status_activitytype = 'M1' THEN ${va}
+        WHEN m.status_activitytype = 'M2'
+          OR (m.statusid = 2 AND m.previoustatusid = 1
+              AND COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime))) <= 300)
+          THEN ${nnva}
+        ELSE ${nva}
+      END || ' minutes')::interval
+  )`;
+
 async function loadSapReconciliationData(fromDate, toDate) {
   const { rows: rr } = await pool.query(
     `SELECT COALESCE($1::date, (now() AT TIME ZONE '${TZ}')::date - 29) AS from_d,
@@ -1610,6 +1623,7 @@ async function exportSapReconciliation(req, res) {
     const { funnel: f, by_date } = data;
     const caps = await loadMaxRecordMinutes();
     const cutSec = CAP_CUT_SECONDS(caps.va, caps.nnva, caps.nva);
+    const endCappedExpr = END_CAPPED_EXPR(caps.va, caps.nnva, caps.nva);
 
     const wb = new ExcelJS.Workbook();
     const fmt = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 100) / 100 : 0);
@@ -1752,10 +1766,12 @@ async function exportSapReconciliation(req, res) {
       { header: "Activity", key: "activity", width: 8 },
       { header: "Status desc", key: "status_desc", width: 22 },
       { header: "Start", key: "start", width: 20 },
-      { header: "End (effective)", key: "end", width: 20 },
+      { header: "End (original)", key: "end_orig", width: 20 },
+      { header: "End (capped)", key: "end_capped", width: 20 },
       { header: "Raw secs", key: "raw", width: 10 },
       { header: "Clamped secs", key: "clamped", width: 12 },
       { header: "Cap cut secs", key: "capcut", width: 13 },
+      { header: "Duration recognized", key: "recognized", width: 17 },
       { header: "Order", key: "order_no", width: 14 },
       { header: "Operation", key: "operation_no", width: 10 },
       { header: "Op text", key: "operation_text", width: 26 },
@@ -1769,10 +1785,12 @@ async function exportSapReconciliation(req, res) {
          m.machinename AS machine, m.status_activitytype AS activity,
          m.status_description AS status_desc,
          to_char(m.startdatetime, 'YYYY-MM-DD HH24:MI:SS') AS start,
-         to_char(COALESCE(m.end_effective, m.enddatetime), 'YYYY-MM-DD HH24:MI:SS') AS end,
+         to_char(m.enddatetime, 'YYYY-MM-DD HH24:MI:SS') AS end_orig,
+         to_char(${endCappedExpr}, 'YYYY-MM-DD HH24:MI:SS') AS end_capped,
          COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime)))::bigint AS raw,
          (${CLAMPED_SEG_SECONDS})::bigint AS clamped,
          (${cutSec})::bigint AS capcut,
+         (${CLAMPED_SEG_SECONDS} - ${cutSec})::bigint AS recognized,
          m.order_no, m.operation_no,
          COALESCE(NULLIF(m.operation_short_text, ''), m.operation_description) AS operation_text,
          m.confirmation_number AS confirmation, m.is_stuck AS stuck
@@ -1795,10 +1813,12 @@ async function exportSapReconciliation(req, res) {
         activity: r.activity,
         status_desc: r.status_desc,
         start: r.start,
-        end: r.end,
+        end_orig: r.end_orig,
+        end_capped: r.end_capped,
         raw: r.raw,
         clamped: r.clamped,
         capcut: r.capcut,
+        recognized: Math.max(Number(r.recognized) || 0, 0),
         order_no: r.order_no,
         operation_no: r.operation_no,
         operation_text: r.operation_text,
@@ -1873,7 +1893,71 @@ async function getSapReconciliationDay(req, res) {
     );
     res.json({ data: { date: day, bundles: rows }, meta: meta() });
   } catch (err) {
-    console.error('sap-reconciliation-day error:', err);
+    console.error("sap-reconciliation-day error:", err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function getSapReconciliationRecords(req, res) {
+  try {
+    const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : null;
+    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "") ? req.query.to : null;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const pageSize = Math.min(Math.max(parseInt(req.query.pageSize, 10) || 100, 10), 500);
+    const q = String(req.query.q || "").trim();
+
+    const caps = await loadMaxRecordMinutes();
+    const cutSec = CAP_CUT_SECONDS(caps.va, caps.nnva, caps.nva);
+    const endCappedExpr = END_CAPPED_EXPR(caps.va, caps.nnva, caps.nva);
+
+    const search = q
+      ? "AND (m.sn_employee ILIKE $3 OR u.full_name ILIKE $3 OR m.machinename ILIKE $3 OR m.order_no ILIKE $3)"
+      : "";
+    const params = [fromDate, toDate];
+    if (q) params.push(`%${q}%`);
+
+    const { rows: countRows } = await pool.query(
+      `SELECT count(*)::int AS total
+       FROM public.sap_staging_source src
+       JOIN public.sap_timesheet_staging st ON st.id = src.staging_id
+       JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
+       LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
+       WHERE src.source_system = 'MCH_HOURS'
+         AND st.bucket_start::date BETWEEN $1::date AND $2::date ${search}`,
+      params,
+    );
+    const total = countRows[0]?.total || 0;
+
+    const { rows } = await pool.query(
+      `SELECT
+         to_char(st.bucket_start AT TIME ZONE '${TZ}', 'YYYY-MM-DD') AS date,
+         st.id AS staging_id, st.status AS bundle_status, st.is_productive AS bundle_productive,
+         m.sn_employee AS pernr, COALESCE(u.full_name, '') AS name,
+         m.machinename AS machine, m.status_activitytype AS activity,
+         m.status_description AS status_desc,
+         to_char(m.startdatetime, 'YYYY-MM-DD HH24:MI:SS') AS start,
+         to_char(m.enddatetime, 'YYYY-MM-DD HH24:MI:SS') AS end_orig,
+         to_char(${endCappedExpr}, 'YYYY-MM-DD HH24:MI:SS') AS end_capped,
+         COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime)))::bigint AS raw,
+         (${CLAMPED_SEG_SECONDS})::bigint AS clamped,
+         (${cutSec})::bigint AS capcut,
+         (${CLAMPED_SEG_SECONDS} - ${cutSec})::bigint AS recognized,
+         m.order_no, m.operation_no,
+         COALESCE(NULLIF(m.operation_short_text, ''), m.operation_description) AS operation_text,
+         m.confirmation_number AS confirmation, m.is_stuck AS stuck
+       FROM public.sap_staging_source src
+       JOIN public.sap_timesheet_staging st ON st.id = src.staging_id
+       JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
+       LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
+       WHERE src.source_system = 'MCH_HOURS'
+         AND st.bucket_start::date BETWEEN $1::date AND $2::date ${search}
+       ORDER BY st.bucket_start DESC, st.id DESC, m.startdatetime
+       LIMIT $${q ? 4 : 3} OFFSET $${q ? 5 : 4}`,
+      [...params, pageSize, (page - 1) * pageSize],
+    );
+    res.json({ data: { records: rows, total, page, pageSize }, meta: meta() });
+  } catch (err) {
+    console.error("sap-reconciliation-records error:", err);
     res.status(500).json({ error: err.message });
   }
 }
@@ -1923,6 +2007,7 @@ module.exports = {
   getSapReconciliation,
   exportSapReconciliation,
   getSapReconciliationDay,
+  getSapReconciliationRecords,
   getSapReconciliationRecord,
   getOrderStatus,
   getWorkload,
