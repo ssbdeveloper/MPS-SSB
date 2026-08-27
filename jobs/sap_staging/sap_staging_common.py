@@ -374,7 +374,10 @@ def insert_staging_rows(conn, rows: list[dict]) -> int:
     if not rows:
         return 0
 
-    values = [[row.get(column) for column in STAGING_COLUMNS] for row in rows]
+    values = [
+        [row.get(column) if column != "is_correction" else row.get("is_correction", False) for column in STAGING_COLUMNS]
+        for row in rows
+    ]
     columns_sql = ", ".join(STAGING_COLUMNS)
 
     data_columns = [c for c in STAGING_COLUMNS if c not in ("source_system", "source_key")]
