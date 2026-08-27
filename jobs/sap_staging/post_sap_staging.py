@@ -39,7 +39,7 @@ def _conn(kind: str):
 
 
 def _reset_conn(kind: str) -> None:
-
+    """Koneksi rusak (jaringan putus) -> buang, biar dibuat ulang."""
     conn = getattr(_tl, kind, None)
     if conn is not None:
         try:
@@ -67,9 +67,7 @@ def parse_sap_status(response_text: str) -> tuple[str, str]:
 def post_payload(payload: dict[str, Any], timeout: int) -> tuple[int, str]:
     url, username, password = sap_credentials()
     if not url or not username or not password:
-        raise RuntimeError(
-            "SAP_INBOUND_URL, SAP_INBOUND_USERNAME, and SAP_INBOUND_PASSWORD are required"
-        )
+        raise RuntimeError("SAP_INBOUND_URL, SAP_INBOUND_USERNAME, and SAP_INBOUND_PASSWORD are required")
 
     basic_auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     data = json.dumps(payload).encode("utf-8")
@@ -98,8 +96,9 @@ def claim_rows(
     productive: bool | None = None,
     failed_only: bool = False,
     include_today: bool = False,
+    date_filter: str | None = None,
+    pernr_filter: str | None = None,
 ) -> list[dict]:
-
     if failed_only:
         statuses = ["FAILED"]
     elif include_failed:
@@ -110,9 +109,7 @@ def claim_rows(
     params: list[Any] = [statuses]
 
     if not include_today:
-        filters.append(
-            "(source_system <> 'MCH_HOURS' OR bucket_start::date < (now() AT TIME ZONE %s)::date)"
-        )
+        filters.append("(source_system <> 'MCH_HOURS' OR bucket_start::date < (now() AT TIME ZONE %s)::date)")
         params.append(app_timezone())
 
     if source_system:
@@ -121,10 +118,25 @@ def claim_rows(
     if plant:
         filters.append("werks = %s")
         params.append(plant)
-
     if productive is not None:
         filters.append("is_productive = %s")
         params.append(productive)
+
+    if date_filter:
+        filters.append("bucket_start::date = %s")
+        params.append(date_filter)
+    if pernr_filter:
+        filters.append("(pernr = %s OR pernr_origin = %s)")
+        params.extend([pernr_filter, pernr_filter])
+
+    filters.append("""
+      NOT EXISTS (
+        SELECT 1 FROM public.sap_staging_source ss
+        JOIN public.sap_staging_exclusion ex
+          ON ex.source_system = ss.source_system AND ex.source_row_id = ss.source_row_id
+        WHERE ss.staging_id = public.sap_timesheet_staging.id
+      )
+    """)
 
     where_sql = " AND ".join(filters)
     sql = f"""
@@ -205,9 +217,7 @@ def claim_selected_rows(ids: list[str], ztimesheetids: list[str], allow_posted: 
     return rows
 
 
-def update_result(
-    row_id: int, ok: bool, status_code: int, response_text: str, message: str
-) -> None:
+def update_result(row_id: int, ok: bool, status_code: int, response_text: str, message: str) -> None:
     try:
         parsed_response = json.loads(response_text)
     except json.JSONDecodeError:
@@ -238,7 +248,6 @@ def update_result(
             )
         conn.commit()
     except Exception:
-
         _reset_conn("staging")
         conn = _conn("staging")
         with conn.cursor() as cur:
@@ -264,9 +273,7 @@ def update_result(
 def log_timesheet_sap(payload: dict[str, Any], response_text: str) -> None:
     try:
         status, message = parse_sap_status(response_text)
-        sap_response = (
-            f"{'SUCCESS' if status == 'S' else 'ERROR'} : {message}" if status else response_text
-        )
+        sap_response = f"{'SUCCESS' if status == 'S' else 'ERROR'} : {message}" if status else response_text
         conn = _conn("source")
         if True:
             with conn.cursor() as cur:
@@ -332,7 +339,6 @@ def find_posted_conflicts(row_ids: list[int]) -> dict[int, str]:
     WHERE s.staging_id = ANY(%s::bigint[])
     GROUP BY s.staging_id
     """
-
     sql = sql.replace("prev.source_key", "prev_t.source_key")
     with connect_staging() as conn:
         with conn.cursor() as cur:
@@ -340,12 +346,8 @@ def find_posted_conflicts(row_ids: list[int]) -> dict[int, str]:
             return {
                 int(staging_id): (
                     f"Source segment already POSTED in bundle {posted_in}"
-                    + (
-                        " with a DIFFERENT source_key (source data changed — needs storno in SAP"
-                        " before this correction is sent)"
-                        if key_changed
-                        else " (duplicate)"
-                    )
+                    + (" with a DIFFERENT source_key (source data changed — needs storno in SAP"
+                       " before this correction is sent)" if key_changed else " (duplicate)")
                 )
                 for staging_id, posted_in, key_changed in cur.fetchall()
             }
@@ -391,7 +393,13 @@ def mark_skipped(row_id: int, reason: str) -> None:
 
 
 def post_one(row: dict, args: argparse.Namespace) -> str:
+    """Kirim SATU baris ke SAP. Dipanggil paralel oleh ThreadPoolExecutor.
 
+    Retry hanya untuk kegagalan JARINGAN (mis. SSL UNEXPECTED_EOF — CPI memutus koneksi),
+    BUKAN untuk penolakan SAP. Retry aman karena ID-nya sama: kalau ternyata SAP sudah
+    menerima kiriman pertama, retry ditolak sebagai ZTIMESHEETID duplikat (terlihat),
+    bukan dihitung dua kali.
+    """
     row_id = row["id"]
     zid = (row["payload"] or {}).get("ZTIMESHEETID")
     payload = row["payload"] or {}
@@ -408,14 +416,8 @@ def post_one(row: dict, args: argparse.Namespace) -> str:
             last_error = str(exc)
             if attempt < args.max_retries:
                 backoff = args.retry_backoff * attempt
-                log.warning(
-                    "Jaringan gagal id=%s (percobaan %s/%s), ulang dalam %.1fs: %s",
-                    row_id,
-                    attempt,
-                    args.max_retries,
-                    backoff,
-                    exc,
-                )
+                log.warning("Jaringan gagal id=%s (percobaan %s/%s), ulang dalam %.1fs: %s",
+                            row_id, attempt, args.max_retries, backoff, exc)
                 time.sleep(backoff)
                 continue
             update_result(row_id, False, 0, last_error, last_error)
@@ -427,20 +429,10 @@ def post_one(row: dict, args: argparse.Namespace) -> str:
         sap_status, sap_message = parse_sap_status(response_text)
         ok = sap_status == "S"
 
-        if (
-            not ok
-            and "already being processed" in sap_message.lower()
-            and attempt < args.max_retries
-        ):
+        if not ok and "already being processed" in sap_message.lower() and attempt < args.max_retries:
             backoff = args.retry_backoff * attempt
-            log.warning(
-                "Order terkunci id=%s (percobaan %s/%s), ulang dalam %.1fs: %s",
-                row_id,
-                attempt,
-                args.max_retries,
-                backoff,
-                sap_message,
-            )
+            log.warning("Order terkunci id=%s (percobaan %s/%s), ulang dalam %.1fs: %s",
+                        row_id, attempt, args.max_retries, backoff, sap_message)
             last_message = sap_message
             time.sleep(backoff)
             continue
@@ -466,7 +458,14 @@ def post_one(row: dict, args: argparse.Namespace) -> str:
 
 
 def post_order_group(rows: list[dict], args: argparse.Namespace) -> list[str]:
+    """Kirim semua baris untuk SATU order — SERIAL.
 
+    SAP CPI MENGUNCI sebuah order selama memproses konfirmasinya: dua kiriman untuk
+    order yang sama secara bersamaan -> yang kedua ditolak
+    ("Order X is already being processed by SAPCI"). Terbukti live: paralel acak 5 worker
+    membuat 6 dari 10 baris gagal, 4 di antaranya menabrak order yang sama.
+    Jadi paralelismenya ADA DI ANTAR-ORDER, bukan di dalam satu order.
+    """
     return [post_one(row, args) for row in rows]
 
 
@@ -482,15 +481,7 @@ def process_rows(args: argparse.Namespace) -> None:
             productive = True
         elif args.unproductive_only:
             productive = False
-        rows = claim_rows(
-            args.limit,
-            args.retry_failed,
-            args.source_system,
-            plant,
-            productive,
-            args.failed_only,
-            args.include_today,
-        )
+        rows = claim_rows(args.limit, args.retry_failed, args.source_system, plant, productive, args.failed_only, args.include_today, args.date, args.pernr)
     if not rows:
         log.info("No staging rows to post")
         return
@@ -501,9 +492,7 @@ def process_rows(args: argparse.Namespace) -> None:
 
     burned = find_burned_ztimesheetids([str(row["id"]) for row in rows])
     if burned:
-        log.warning(
-            "Guard: %s bundel dilewati — ZTIMESHEETID-nya sudah dipakai di SAP", len(burned)
-        )
+        log.warning("Guard: %s bundel dilewati — ZTIMESHEETID-nya sudah dipakai di SAP", len(burned))
     for row in rows:
         reason = burned.get(str(row["id"]))
         if reason and row["id"] not in conflicts:
@@ -532,12 +521,8 @@ def process_rows(args: argparse.Namespace) -> None:
     started = time.perf_counter()
     results: list[str] = []
     if args.workers > 1 and len(groups) > 1:
-        log.info(
-            "Mengirim %s baris / %s order dengan %s worker (paralel antar-order, serial di dalam order)",
-            len(postable),
-            len(groups),
-            args.workers,
-        )
+        log.info("Mengirim %s baris / %s order dengan %s worker (paralel antar-order, serial di dalam order)",
+                 len(postable), len(groups), args.workers)
         with ThreadPoolExecutor(max_workers=args.workers) as pool:
             futures = [pool.submit(post_order_group, grp, args) for grp in groups.values()]
             for fut in as_completed(futures):
@@ -559,9 +544,7 @@ def process_rows(args: argparse.Namespace) -> None:
 
     log.info(
         "SAP posting done success=%s failed=%s skipped=%s",
-        success_count,
-        fail_count,
-        skipped_count,
+        success_count, fail_count, skipped_count,
     )
 
 
@@ -570,66 +553,39 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--delay-ms", type=int, default=100)
+    parser.add_argument("--retry-failed", action="store_true", help="Also retry rows with status FAILED")
+    parser.add_argument("--failed-only", action="store_true", help="HANYA baris FAILED (dipakai tombol 'kirim ulang gagal' di UI — tidak menyentuh PENDING)")
+    parser.add_argument("--include-today", action="store_true", help="Ikutkan bundel MCH_HOURS hari BERJALAN (default: hanya hari selesai). Hati-hati: mengunci hari yang masih tumbuh.")
+    parser.add_argument("--source-system", choices=["TIMESHEET", "MCH_HOURS"], help="Only post one source system")
     parser.add_argument(
-        "--retry-failed", action="store_true", help="Also retry rows with status FAILED"
-    )
-    parser.add_argument(
-        "--failed-only",
-        action="store_true",
-        help="HANYA baris FAILED (dipakai tombol 'kirim ulang gagal' di UI — tidak menyentuh PENDING)",
-    )
-    parser.add_argument(
-        "--include-today",
-        action="store_true",
-        help="Ikutkan bundel MCH_HOURS hari BERJALAN (default: hanya hari selesai). Hati-hati: mengunci hari yang masih tumbuh.",
-    )
-    parser.add_argument(
-        "--source-system", choices=["TIMESHEET", "MCH_HOURS"], help="Only post one source system"
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=1,
+        "--workers", type=int, default=1,
         help="Jumlah kiriman paralel ke SAP (default 1 = serial). SAP ~7 dtk/kiriman, "
-        "jadi paralel adalah satu-satunya cara mempercepat batch besar. Mulai dari 4-5; "
-        "kalau error jaringan/TLS mulai sering, TURUNKAN (tanda rate-limit CPI).",
+             "jadi paralel adalah satu-satunya cara mempercepat batch besar. Mulai dari 4-5; "
+             "kalau error jaringan/TLS mulai sering, TURUNKAN (tanda rate-limit CPI).",
     )
     parser.add_argument(
-        "--max-retries",
-        type=int,
-        default=3,
+        "--max-retries", type=int, default=3,
         help="Percobaan ulang untuk kegagalan JARINGAN saja (bukan penolakan SAP). "
-        "Aman: ID sama -> SAP menolak duplikat, tidak dobel.",
+             "Aman: ID sama -> SAP menolak duplikat, tidak dobel.",
     )
-    parser.add_argument(
-        "--retry-backoff",
-        type=float,
-        default=2.0,
-        help="Detik jeda dasar antar retry (naik linear)",
-    )
+    parser.add_argument("--retry-backoff", type=float, default=2.0, help="Detik jeda dasar antar retry (naik linear)")
     productive_group = parser.add_mutually_exclusive_group()
     productive_group.add_argument(
-        "--productive-only",
-        action="store_true",
+        "--productive-only", action="store_true",
         help="Hanya kirim baris PRODUKTIF (zconf_type M1/M2 — konfirmasi order). "
-        "Pakai ini untuk posting massal selagi baris unproductive masih ditolak SAP.",
+             "Pakai ini untuk posting massal selagi baris unproductive masih ditolak SAP.",
     )
     productive_group.add_argument(
-        "--unproductive-only",
-        action="store_true",
+        "--unproductive-only", action="store_true",
         help="Hanya kirim baris UNPRODUCTIVE (LSTAR). Jalankan setelah fix cost center di SAP.",
     )
     parser.add_argument("--plant", help="Only post one plant. Defaults to PLANT_SSB")
     parser.add_argument("--all-plants", action="store_true", help="Ignore plant filter")
     parser.add_argument("--ids", help="Comma-separated staging id list to post for manual testing")
-    parser.add_argument(
-        "--ztimesheetids", help="Comma-separated ZTIMESHEETID list to post for manual testing"
-    )
-    parser.add_argument(
-        "--allow-posted",
-        action="store_true",
-        help="Allow selected --ids/--ztimesheetids even if already POSTED",
-    )
+    parser.add_argument("--ztimesheetids", help="Comma-separated ZTIMESHEETID list to post for manual testing")
+    parser.add_argument("--allow-posted", action="store_true", help="Allow selected --ids/--ztimesheetids even if already POSTED")
+    parser.add_argument("--date", help="Posting manual per tanggal bucket (YYYY-MM-DD) via UI")
+    parser.add_argument("--pernr", help="Posting manual per operator (PERNR) via UI")
     return parser
 
 

@@ -970,7 +970,7 @@ async function saveMachineHoursOverride(req, res) {
 }
 
 async function enqueueSapOps(req, res) {
-  const ALLOWED = new Set(['stage_catchup', 'retry_failed', 'rebuild_pending']);
+  const ALLOWED = new Set(['stage_catchup', 'retry_failed', 'rebuild_pending', 'post_corrections', 'post_bundles', 'post_date', 'post_operator', 'recalc_date']);
   try {
     const action = String(req.body?.action || '').trim();
     if (!ALLOWED.has(action)) {
@@ -985,6 +985,24 @@ async function enqueueSapOps(req, res) {
         return res
           .status(400)
           .json({ error: 'from_date (YYYY-MM-DD) is required for rebuild_pending' });
+      }
+    }
+    if (action === 'post_bundles' || action === 'post_corrections') {
+      const ids = Array.isArray(params.ids) ? params.ids.filter((v) => String(v).trim()) : [];
+      if (!ids.length) {
+        return res.status(400).json({ error: 'ids (array) is required for ' + action });
+      }
+    }
+    if (action === 'post_date' || action === 'recalc_date') {
+      const date = String(params.date || '').trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ error: 'date (YYYY-MM-DD) is required for ' + action });
+      }
+    }
+    if (action === 'post_operator') {
+      const pernr = String(params.pernr || '').trim();
+      if (!pernr) {
+        return res.status(400).json({ error: 'pernr is required for post_operator' });
       }
     }
 
@@ -1810,11 +1828,14 @@ async function exportSapReconciliation(req, res) {
          (${CLAMPED_SEG_SECONDS} - ${cutSec} - ${BREAK_CUT_SECONDS})::bigint AS recognized,
          m.order_no, m.operation_no,
          COALESCE(NULLIF(m.operation_short_text, ''), m.operation_description) AS operation_text,
-         m.confirmation_number AS confirmation, m.is_stuck AS stuck
+         m.confirmation_number AS confirmation, m.is_stuck AS stuck,
+         (ex2.source_row_id IS NOT NULL) AS excluded
        FROM public.sap_staging_source src
        JOIN public.sap_timesheet_staging st ON st.id = src.staging_id
        JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
        LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
+       LEFT JOIN public.sap_staging_exclusion ex2
+         ON ex2.source_system = 'MCH_HOURS' AND ex2.source_row_id = m.proddataid::text
        WHERE src.source_system = 'MCH_HOURS'
          AND st.bucket_start::date BETWEEN $1::date AND $2::date
        ORDER BY st.bucket_start, st.id, m.startdatetime`,
@@ -1963,11 +1984,14 @@ async function getSapReconciliationRecords(req, res) {
          (${CLAMPED_SEG_SECONDS} - ${cutSec} - ${BREAK_CUT_SECONDS})::bigint AS recognized,
          m.order_no, m.operation_no,
          COALESCE(NULLIF(m.operation_short_text, ''), m.operation_description) AS operation_text,
-         m.confirmation_number AS confirmation, m.is_stuck AS stuck
+         m.confirmation_number AS confirmation, m.is_stuck AS stuck,
+         (ex2.source_row_id IS NOT NULL) AS excluded
        FROM public.sap_staging_source src
        JOIN public.sap_timesheet_staging st ON st.id = src.staging_id
        JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
        LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
+       LEFT JOIN public.sap_staging_exclusion ex2
+         ON ex2.source_system = 'MCH_HOURS' AND ex2.source_row_id = m.proddataid::text
        WHERE src.source_system = 'MCH_HOURS'
          AND st.bucket_start::date BETWEEN $1::date AND $2::date ${search}
        ORDER BY st.bucket_start DESC, st.id DESC, m.startdatetime
@@ -1977,6 +2001,106 @@ async function getSapReconciliationRecords(req, res) {
     res.json({ data: { records: rows, total, page, pageSize }, meta: meta() });
   } catch (err) {
     console.error("sap-reconciliation-records error:", err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function excludeSapRecord(req, res) {
+  try {
+    const sourceRowId = String(req.body?.source_row_id || '').trim();
+    if (!sourceRowId) return res.status(400).json({ error: 'source_row_id wajib' });
+    const note = String(req.body?.note || '').trim() || null;
+    const excludedBy = req.header('x-user-id') || null;
+
+    const { rows } = await pool.query(
+      `SELECT st.bucket_start::date AS d FROM public.sap_staging_source ss
+       JOIN public.sap_timesheet_staging st ON st.id = ss.staging_id
+       WHERE ss.source_system = 'MCH_HOURS' AND ss.source_row_id = $1
+       ORDER BY st.bucket_start DESC LIMIT 1`,
+      [sourceRowId],
+    );
+    const date = rows[0]?.d || null;
+
+    await pool.query(
+      `INSERT INTO public.sap_staging_exclusion (source_system, source_row_id, excluded_by, note)
+       VALUES ('MCH_HOURS', $1, $2, $3)
+       ON CONFLICT (source_system, source_row_id) DO UPDATE SET note = EXCLUDED.note`,
+      [sourceRowId, excludedBy, note],
+    );
+
+    let recalc = null;
+    if (date) {
+      try {
+        const r = await pool.query(
+          `INSERT INTO public.sap_ops_request (action, params, requested_by)
+           VALUES ('recalc_date', $1::jsonb, $2) RETURNING id, status`,
+          [JSON.stringify({ date: date.toISOString().slice(0, 10) }), excludedBy],
+        );
+        recalc = r.rows[0];
+      } catch (err) {
+        if (err.code !== '23505') throw err;
+      }
+    }
+    res.json({ data: { excluded: true, source_row_id: sourceRowId, date, recalc }, meta: meta() });
+  } catch (err) {
+    console.error('excludeSapRecord error:', err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function unexcludeSapRecord(req, res) {
+  try {
+    const sourceRowId = String(req.query.source_row_id || '').trim();
+    if (!sourceRowId) return res.status(400).json({ error: 'source_row_id wajib' });
+
+    const { rows } = await pool.query(
+      `SELECT startdatetime::date AS d FROM public.mch_transaction WHERE proddataid = $1::int LIMIT 1`,
+      [sourceRowId],
+    );
+    const date = rows[0]?.d || null;
+
+    await pool.query(
+      `DELETE FROM public.sap_staging_exclusion WHERE source_system = 'MCH_HOURS' AND source_row_id = $1`,
+      [sourceRowId],
+    );
+
+    let recalc = null;
+    if (date) {
+      try {
+        const r = await pool.query(
+          `INSERT INTO public.sap_ops_request (action, params, requested_by)
+           VALUES ('recalc_date', $1::jsonb, $2) RETURNING id, status`,
+          [JSON.stringify({ date: date.toISOString().slice(0, 10) }), req.header('x-user-id') || null],
+        );
+        recalc = r.rows[0];
+      } catch (err) {
+        if (err.code !== '23505') throw err;
+      }
+    }
+    res.json({ data: { excluded: false, source_row_id: sourceRowId, date, recalc }, meta: meta() });
+  } catch (err) {
+    console.error('unexcludeSapRecord error:', err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
+async function listSapExclusions(req, res) {
+  try {
+    const { rows } = await pool.query(
+      `SELECT ex.source_row_id, ex.excluded_by, ex.excluded_at, ex.note,
+              m.sn_employee AS pernr, COALESCE(u.full_name, '') AS name,
+              m.machinename, m.status_activitytype AS activity,
+              m.startdatetime, COALESCE(m.end_effective, m.enddatetime) AS end_dt,
+              COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime)))::bigint AS raw_seconds
+       FROM public.sap_staging_exclusion ex
+       JOIN public.mch_transaction m ON m.proddataid = ex.source_row_id::int
+       LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
+       WHERE ex.source_system = 'MCH_HOURS'
+       ORDER BY ex.excluded_at DESC`,
+    );
+    res.json({ data: { exclusions: rows }, meta: meta() });
+  } catch (err) {
+    console.error('listSapExclusions error:', err);
     res.status(500).json({ error: err.message });
   }
 }
@@ -2028,6 +2152,9 @@ module.exports = {
   getSapReconciliationDay,
   getSapReconciliationRecords,
   getSapReconciliationRecord,
+  excludeSapRecord,
+  unexcludeSapRecord,
+  listSapExclusions,
   getOrderStatus,
   getWorkload,
   getDailyHours,

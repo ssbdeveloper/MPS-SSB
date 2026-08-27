@@ -35,9 +35,7 @@ def parse_dt(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def fetch_timesheet_rows(
-    tsnumbers: list[int], from_date: str | None, to_date: str | None
-) -> list[dict]:
+def fetch_timesheet_rows(tsnumbers: list[int], from_date: str | None, to_date: str | None) -> list[dict]:
     if not tsnumbers and not (from_date and to_date):
         raise ValueError("timesheet staging needs --tsnumbers or both --from-date and --to-date")
 
@@ -123,7 +121,10 @@ def fetch_timesheet_rows(
 
 
 def fetch_machine_hour_rows(from_ts: datetime, to_ts: datetime, mode: str = "normal") -> list[dict]:
-
+    """mode='normal': bundel biasa untuk kunci yang BELUM ter-post (segmen ter-post
+    dikecualikan). mode='correction': bundel KOREKSI untuk segmen yang datang setelah
+    kunci-harinya ter-post — hanya segmen yang BELUM ter-bundle sama sekali, kunci diberi
+    penanda 'KOREKSI' agar tak menabrak bundel POSTED. Aditif di SAP -> menambah jam."""
     werks = plant_code()
     if not werks:
         raise ValueError("PLANT_SSB is required for machine-hour staging")
@@ -132,7 +133,7 @@ def fetch_machine_hour_rows(from_ts: datetime, to_ts: datetime, mode: str = "nor
     try:
         with connect_source() as conn:
             rules = load_sap_rules(conn)
-    except Exception as exc:  # pragma: no cover — fallback aman ke default
+    except Exception as exc:
         log.warning("fetch_machine_hour_rows: load_sap_rules gagal, pakai default (%s)", exc)
         rules = load_sap_rules_default()
     break_windows_json = json.dumps(rules.get("break_windows", []))
@@ -279,6 +280,14 @@ def fetch_machine_hour_rows(from_ts: datetime, to_ts: datetime, mode: str = "nor
         )
         AND startdatetime < %s
         AND COALESCE(end_effective, enddatetime) > %s
+        -- EXCLUDED (soft delete per record, 2026-08-27): record yang ditandai lewat UI
+        -- tidak pernah ikut di-bundle/dikirim. Berlaku juga saat rebuild (tabel exclusion
+        -- terpisah dari provenance, jadi bertahan). Un-exclude = hapus baris dari tabel.
+        AND NOT EXISTS (
+          SELECT 1 FROM public.sap_staging_exclusion ex
+          WHERE ex.source_system = 'MCH_HOURS'
+            AND ex.source_row_id = mch_transaction.proddataid::text
+        )
         __SEGMENT_PROVENANCE_FILTER__
     ),
     -- BREAK WINDOWS (rules config, 2026-08-19): jam istirahat menentukan aktivitas
@@ -487,54 +496,33 @@ def fetch_machine_hour_rows(from_ts: datetime, to_ts: datetime, mode: str = "nor
     """
 
     if mode == "correction":
-        seg_filter = (
-            "AND NOT EXISTS (SELECT 1 FROM public.sap_staging_source ss "
-            "WHERE ss.source_system = 'MCH_HOURS' AND ss.source_row_id = mch_transaction.proddataid::text)"
-        )
+        seg_filter = ("AND NOT EXISTS (SELECT 1 FROM public.sap_staging_source ss "
+                      "WHERE ss.source_system = 'MCH_HOURS' AND ss.source_row_id = mch_transaction.proddataid::text)")
         source_key_expr = "md5(f.norm_key || '|KOREKSI|' || f.seg_hash)"
         is_correction_expr = "true"
-        posted_key_filter = (
-            "EXISTS (SELECT 1 FROM public.sap_timesheet_staging p "
-            "WHERE p.bucket_start = f.bucket_start AND p.status = 'POSTED')"
-        )
+        posted_key_filter = ("EXISTS (SELECT 1 FROM public.sap_timesheet_staging p "
+                             "WHERE p.bucket_start = f.bucket_start AND p.status = 'POSTED')")
     else:
-        seg_filter = (
-            "AND NOT EXISTS (SELECT 1 FROM public.sap_staging_source ss "
-            "WHERE ss.source_system = 'MCH_HOURS' AND ss.source_row_id = mch_transaction.proddataid::text "
-            "AND ss.posted_at IS NOT NULL)"
-        )
+        seg_filter = ("AND NOT EXISTS (SELECT 1 FROM public.sap_staging_source ss "
+                      "WHERE ss.source_system = 'MCH_HOURS' AND ss.source_row_id = mch_transaction.proddataid::text "
+                      "AND ss.posted_at IS NOT NULL)")
         source_key_expr = "f.norm_key"
         is_correction_expr = "false"
-        posted_key_filter = (
-            "NOT EXISTS (SELECT 1 FROM public.sap_timesheet_staging p "
-            "WHERE p.bucket_start = f.bucket_start AND p.status = 'POSTED')"
-        )
+        posted_key_filter = ("NOT EXISTS (SELECT 1 FROM public.sap_timesheet_staging p "
+                             "WHERE p.bucket_start = f.bucket_start AND p.status = 'POSTED')")
 
-    sql = (
-        sql.replace("__SEGMENT_PROVENANCE_FILTER__", seg_filter)
-        .replace("__SOURCE_KEY_EXPR__", source_key_expr)
-        .replace("__IS_CORRECTION_EXPR__", is_correction_expr)
-        .replace("__POSTED_KEY_FILTER__", posted_key_filter)
-    )
+    sql = (sql
+           .replace("__SEGMENT_PROVENANCE_FILTER__", seg_filter)
+           .replace("__SOURCE_KEY_EXPR__", source_key_expr)
+           .replace("__IS_CORRECTION_EXPR__", is_correction_expr)
+           .replace("__POSTED_KEY_FILTER__", posted_key_filter))
 
     with connect_source() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 sql,
-                (
-                    max_va,
-                    max_nnva,
-                    max_nva,
-                    to_ts,
-                    from_ts,
-                    break_windows_json,
-                    from_ts,
-                    to_ts,
-                    from_ts,
-                    to_ts,
-                    werks,
-                    werks,
-                ),
+                (max_va, max_nnva, max_nva, to_ts, from_ts, break_windows_json,
+                 from_ts, to_ts, from_ts, to_ts, werks, werks),
             )
             return [dict(row) for row in cur.fetchall()]
 
@@ -571,13 +559,7 @@ def cmd_mchours(args: argparse.Namespace) -> None:
 
     rows = fetch_machine_hour_rows(from_ts, to_ts)
     inserted = stage_rows(rows, args.dry_run)
-    log.info(
-        "Machine-hour staging window=%s..%s prepared=%s inserted=%s",
-        from_ts,
-        to_ts,
-        len(rows),
-        inserted,
-    )
+    log.info("Machine-hour staging window=%s..%s prepared=%s inserted=%s", from_ts, to_ts, len(rows), inserted)
 
 
 def build_parser() -> argparse.ArgumentParser:
