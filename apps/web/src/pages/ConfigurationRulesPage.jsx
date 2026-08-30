@@ -19,6 +19,7 @@ import { sidebarItems, HUB_HIDDEN_MENUS_KEY, getHiddenHubMenus } from '../config
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
+
 const DAY_OPTIONS = [
   { value: 1, label: 'Mon' },
   { value: 2, label: 'Tue' },
@@ -30,6 +31,7 @@ const DAY_OPTIONS = [
 ];
 
 const EMPTY_WINDOW = { start: '12:00', end: '13:00', days: [] };
+
 
 const FAKE_SETTINGS_KEY = 'mps2.configRulesFakeSettings';
 const FAKE_DEFAULTS = {
@@ -57,23 +59,21 @@ function normalizeMaxRecord(raw) {
       const n = Number(raw[key]);
       out[key] = Number.isFinite(n) && n >= 1 ? n : MAX_RECORD_DEFAULT;
     }
-    return out;
+    return { ...out, mch: raw.mch && typeof raw.mch === 'object' ? raw.mch : {}, timesheet: raw.timesheet && typeof raw.timesheet === 'object' ? raw.timesheet : {} };
   }
   const n = Number(raw);
   const minutes = Number.isFinite(n) && n >= 1 ? n : MAX_RECORD_DEFAULT;
-  return { va: minutes, nnva: minutes, nva: minutes };
+  return { va: minutes, nnva: minutes, nva: minutes, mch: {}, timesheet: {} };
 }
 
 function timeToMinutes(t) {
-  const [h, m] = String(t || '')
-    .split(':')
-    .map(Number);
+  const [h, m] = String(t || '').split(':').map(Number);
   return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : NaN;
 }
 
 function loadFakeSettings() {
   try {
-    return { ...FAKE_DEFAULTS, ...JSON.parse(localStorage.getItem(FAKE_SETTINGS_KEY) || '{}') };
+    return { ...FAKE_DEFAULTS, ...(JSON.parse(localStorage.getItem(FAKE_SETTINGS_KEY) || '{}')) };
   } catch {
     return { ...FAKE_DEFAULTS };
   }
@@ -118,6 +118,47 @@ function MaxRecordRow({ label, value, onChange }) {
   );
 }
 
+
+function MaxRecordTypeRow({ name, code, category, value, hasValue, defaultValue, onChange }) {
+  const noLimit = !hasValue || value === null || value === undefined;
+  const catTone = category === 'va' ? 'bg-emerald-100 text-emerald-700'
+    : category === 'nnva' ? 'bg-sky-100 text-sky-700'
+    : 'bg-amber-100 text-amber-700';
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-slate-300 bg-white px-3 py-2 shadow-[0_1px_2px_rgba(15,23,42,0.03)] transition-all hover:-translate-y-px hover:border-[#00b4d8]/60 hover:shadow-sm">
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-bold text-slate-700">{name}</p>
+        <div className="mt-0.5 flex items-center gap-1.5">
+          <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-slate-600">{code}</span>
+          <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide ${catTone}`}>{category}</span>
+          {!hasValue && <span className="text-[10px] font-semibold text-orange-500">not configured</span>}
+        </div>
+      </div>
+      <div className="flex items-center gap-2.5">
+        <label className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500">
+          <Toggle checked={noLimit} onChange={(v) => onChange(v ? null : (defaultValue || MAX_RECORD_DEFAULT))} label={`No limit for ${name}`} />
+          No Limit
+        </label>
+        <input
+          type="number"
+          min={1}
+          disabled={noLimit}
+          value={noLimit ? '' : value}
+          placeholder={String(defaultValue || '')}
+          onChange={(e) => {
+            const n = Number(e.target.value);
+            if (Number.isFinite(n) && n >= 1) onChange(n);
+          }}
+          className={`h-8 w-20 rounded-lg border px-2 text-xs font-extrabold focus:border-[#00b4d8] focus:outline-none focus:ring-2 focus:ring-[#00b4d8]/20 ${
+            noLimit ? 'border-slate-200 bg-slate-100 text-slate-400' : 'border-slate-400 bg-white text-slate-800'
+          }`}
+        />
+        <span className="w-6 text-[11px] font-bold text-slate-400">min</span>
+      </div>
+    </div>
+  );
+}
+
 function SectionCard({ icon: Icon, title, subtitle, children, accent = '#0077b6' }) {
   const IconComponent = Icon;
   return (
@@ -131,9 +172,7 @@ function SectionCard({ icon: Icon, title, subtitle, children, accent = '#0077b6'
         </span>
         <div className="min-w-0">
           <h2 className="text-sm font-extrabold text-slate-900">{title}</h2>
-          {subtitle && (
-            <p className="truncate text-[11px] font-semibold text-slate-500">{subtitle}</p>
-          )}
+          {subtitle && <p className="truncate text-[11px] font-semibold text-slate-500">{subtitle}</p>}
         </div>
       </header>
       <div className="p-5">{children}</div>
@@ -146,25 +185,34 @@ export default function ConfigurationRulesPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
-  const [maxRules, setMaxRules] = useState({
-    va: MAX_RECORD_DEFAULT,
-    nnva: MAX_RECORD_DEFAULT,
-    nva: MAX_RECORD_DEFAULT,
-  });
+  const [maxRules, setMaxRules] = useState({ va: MAX_RECORD_DEFAULT, nnva: MAX_RECORD_DEFAULT, nva: MAX_RECORD_DEFAULT });
   const [windows, setWindows] = useState([]);
   const [rebuildDate, setRebuildDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [hiddenMenus, setHiddenMenus] = useState(() => getHiddenHubMenus());
   const [fake, setFake] = useState(() => loadFakeSettings());
+  const [catalog, setCatalog] = useState({ mch: [], timesheet: [] });
+  const [maxTab, setMaxTab] = useState('mch'); 
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/config/rules`, { headers: authHeaders() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const payload = await res.json();
+      const [rulesRes, catRes] = await Promise.all([
+        fetch(`${API_BASE}/config/rules`, { headers: authHeaders() }),
+        fetch(`${API_BASE}/config/activity-catalog`, { headers: authHeaders() }),
+      ]);
+      if (!rulesRes.ok) throw new Error(`HTTP ${rulesRes.status}`);
+      const payload = await rulesRes.json();
       const rules = payload?.data || {};
       setWindows(Array.isArray(rules.break_windows) ? rules.break_windows : []);
       setMaxRules(normalizeMaxRecord(rules.max_record_minutes));
+      if (catRes.ok) {
+        const catPayload = await catRes.json();
+        const cat = catPayload?.data || {};
+        setCatalog({
+          mch: (cat.mch || []).filter((x) => x.staged),
+          timesheet: cat.timesheet || [],
+        });
+      }
     } catch (err) {
       toast.error(`Failed to load rules: ${err.message}`);
     } finally {
@@ -172,31 +220,24 @@ export default function ConfigurationRulesPage() {
     }
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
-  const invalidWindows = useMemo(
-    () =>
-      windows.filter((w) => {
-        const validTime = timeToMinutes(w.start) < timeToMinutes(w.end);
-        return !validTime || w.days.length === 0;
-      }),
-    [windows]
-  );
+  const invalidWindows = useMemo(() => windows.filter((w) => {
+    const validTime = timeToMinutes(w.start) < timeToMinutes(w.end);
+    return !validTime || w.days.length === 0;
+  }), [windows]);
 
+  
   const updateWindow = (index, patch) => {
     setWindows((prev) => prev.map((w, i) => (i === index ? { ...w, ...patch } : w)));
   };
 
   const toggleDay = (index, day) => {
-    setWindows((prev) =>
-      prev.map((w, i) => {
-        if (i !== index) return w;
-        const days = w.days.includes(day) ? w.days.filter((d) => d !== day) : [...w.days, day];
-        return { ...w, days };
-      })
-    );
+    setWindows((prev) => prev.map((w, i) => {
+      if (i !== index) return w;
+      const days = w.days.includes(day) ? w.days.filter((d) => d !== day) : [...w.days, day];
+      return { ...w, days };
+    }));
   };
 
   const handleSave = async () => {
@@ -209,7 +250,16 @@ export default function ConfigurationRulesPage() {
       const res = await fetch(`${API_BASE}/config/rules`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ break_windows: windows, max_record_minutes: maxRules }),
+        body: JSON.stringify({
+          break_windows: windows,
+          max_record_minutes: {
+            va: maxRules.va,
+            nnva: maxRules.nnva,
+            nva: maxRules.nva,
+            mch: maxRules.mch || {},
+            timesheet: maxRules.timesheet || {},
+          },
+        }),
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload?.error || `HTTP ${res.status}`);
@@ -221,6 +271,7 @@ export default function ConfigurationRulesPage() {
     }
   };
 
+  
   const toggleMenuHidden = (path) => {
     setHiddenMenus((prev) => {
       const next = prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path];
@@ -239,6 +290,7 @@ export default function ConfigurationRulesPage() {
     return [...map.entries()];
   }, []);
 
+  
   const updateFake = (key, value) => {
     setFake((prev) => {
       const next = { ...prev, [key]: value };
@@ -304,8 +356,7 @@ export default function ConfigurationRulesPage() {
             disabled={saving || invalidWindows.length > 0}
             className="flex h-9 items-center gap-1.5 rounded-xl bg-[#0077b6] px-3.5 text-xs font-extrabold text-white shadow-sm transition hover:bg-[#023e8a] disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save
-            Rules
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />} Save Rules
           </button>
         </div>
       </header>
@@ -318,7 +369,7 @@ export default function ConfigurationRulesPage() {
         ) : (
           <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-12">
             {}
-            <div className="space-y-5 xl:col-span-8">
+            <div className="space-y-5 xl:col-span-7" style={{ animation: 'hm-fade 0.3s ease-out' }}>
               {}
               <SectionCard
                 icon={Clock}
@@ -327,10 +378,7 @@ export default function ConfigurationRulesPage() {
               >
                 <div className="space-y-3">
                   {windows.map((w, index) => (
-                    <div
-                      key={index}
-                      className="rounded-xl border border-slate-300 bg-slate-50/70 p-3.5 transition hover:border-slate-400"
-                    >
+                    <div key={index} className="rounded-xl border border-slate-300 bg-slate-50/70 p-3.5 transition hover:border-slate-400">
                       <div className="flex flex-wrap items-center gap-3">
                         <div className="flex items-center gap-2">
                           <input
@@ -376,9 +424,7 @@ export default function ConfigurationRulesPage() {
                         </button>
                       </div>
                       {w.days.length === 0 && (
-                        <p className="mt-2 text-[11px] font-semibold text-red-600">
-                          Select at least one day
-                        </p>
+                        <p className="mt-2 text-[11px] font-semibold text-red-600">Select at least one day</p>
                       )}
                     </div>
                   ))}
@@ -436,9 +482,7 @@ export default function ConfigurationRulesPage() {
                       type="number"
                       min={5}
                       value={fake.auto_refresh_seconds}
-                      onChange={(e) =>
-                        updateFake('auto_refresh_seconds', Number(e.target.value) || 0)
-                      }
+                      onChange={(e) => updateFake('auto_refresh_seconds', Number(e.target.value) || 0)}
                       className="h-9 w-20 rounded-lg border border-slate-400 bg-white px-2 text-xs font-bold text-slate-700"
                     />
                   </div>
@@ -483,47 +527,96 @@ export default function ConfigurationRulesPage() {
             </div>
 
             {}
-            <div className="space-y-5 xl:col-span-4">
-              {}
+            <div className="xl:col-span-5" style={{ animation: 'hm-fade 0.3s ease-out' }}>
               <SectionCard
                 icon={SlidersHorizontal}
                 title="Max Record Duration"
-                subtitle="Per record type — longer records are cut, the rest is ignored."
+                subtitle="Per activity type — No Limit means the record is never cut."
               >
-                <div className="space-y-4">
-                  <div>
-                    <p className="mb-2 text-[10px] font-extrabold uppercase tracking-widest text-slate-400">
-                      Productive
-                    </p>
-                    <div className="space-y-2.5">
-                      <MaxRecordRow
-                        label={MAX_RECORD_LABELS.va}
-                        value={maxRules.va}
-                        onChange={(v) => setMaxRules((prev) => ({ ...prev, va: v }))}
-                      />
-                      <MaxRecordRow
-                        label={MAX_RECORD_LABELS.nnva}
-                        value={maxRules.nnva}
-                        onChange={(v) => setMaxRules((prev) => ({ ...prev, nnva: v }))}
-                      />
-                    </div>
-                  </div>
-                  <div>
-                    <p className="mb-2 text-[10px] font-extrabold uppercase tracking-widest text-slate-400">
-                      Unproductive
-                    </p>
-                    <MaxRecordRow
-                      label={MAX_RECORD_LABELS.nva}
-                      value={maxRules.nva}
-                      onChange={(v) => setMaxRules((prev) => ({ ...prev, nva: v }))}
-                    />
-                  </div>
-                  <span className="block rounded-full bg-slate-100 px-2.5 py-1 text-center text-[11px] font-bold text-slate-500">
-                    applied in SAP staging
-                  </span>
+                <div className="mb-3 flex items-center gap-1 rounded-lg bg-slate-100 p-1">
+                  {[['mch', 'Machine Hours'], ['timesheet', 'Timesheet']].map(([k, label]) => (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setMaxTab(k)}
+                      className={`flex-1 rounded-md px-3 py-1.5 text-[11px] font-extrabold transition-colors ${
+                        maxTab === k ? 'bg-white text-[#0077b6] shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div
+                  key={maxTab}
+                  className="max-h-[62vh] space-y-5 overflow-y-auto pr-1 [scrollbar-width:thin]"
+                  style={{ animation: 'hm-fade 0.25s ease-out' }}
+                >
+                  {maxTab === 'mch' ? (
+                    <>
+                      {[
+                        ['va', 'Productive', catalog.mch.filter((x) => x.category === 'va')],
+                        ['nnva', 'Productive · Setup (NNVA)', catalog.mch.filter((x) => x.category === 'nnva')],
+                        ['nva', 'Unproductive', catalog.mch.filter((x) => x.category === 'nva')],
+                      ].map(([cat, label, items]) => (
+                        <div key={cat}>
+                          <p className="mb-2 text-[10px] font-extrabold uppercase tracking-widest text-slate-400">{label}</p>
+                          <div className="grid grid-cols-1 gap-2">
+                            {items.map((x) => {
+                              const key = String(x.statusid);
+                              return (
+                                <MaxRecordTypeRow
+                                  key={key}
+                                  name={x.description}
+                                  code={`status ${key}`}
+                                  category={x.category}
+                                  value={maxRules.mch?.[key]}
+                                  hasValue={key in (maxRules.mch || {})}
+                                  defaultValue={maxRules[cat]}
+                                  onChange={(v) => setMaxRules((prev) => ({ ...prev, mch: { ...prev.mch, [key]: v } }))}
+                                />
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  ) : (
+                    <>
+                      {[
+                        ['va', 'Productive', catalog.timesheet.filter((x) => x.category === 'va')],
+                        ['nva', 'Unproductive', catalog.timesheet.filter((x) => x.category === 'nva')],
+                      ].map(([cat, label, items]) => (
+                        <div key={cat}>
+                          <p className="mb-2 text-[10px] font-extrabold uppercase tracking-widest text-slate-400">{label}</p>
+                          <div className="grid grid-cols-1 gap-2">
+                            {items.map((x) => {
+                              const key = String(x.activitytype ?? '');
+                              return (
+                                <MaxRecordTypeRow
+                                  key={key === '' ? 'productive' : key}
+                                  name={x.description}
+                                  code={key === '' ? 'order work' : key}
+                                  category={x.category}
+                                  value={maxRules.timesheet?.[key]}
+                                  hasValue={key in (maxRules.timesheet || {})}
+                                  defaultValue={maxRules[cat]}
+                                  onChange={(v) => setMaxRules((prev) => ({ ...prev, timesheet: { ...prev.timesheet, [key]: v } }))}
+                                />
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
                 </div>
               </SectionCard>
+            </div>
 
+            {}
+            <div className="xl:col-span-12">
               {}
               <SectionCard
                 icon={RefreshCw}
@@ -545,11 +638,7 @@ export default function ConfigurationRulesPage() {
                     disabled={rebuilding}
                     className="flex h-9 items-center gap-1.5 rounded-xl bg-[#0077b6] px-3.5 text-xs font-extrabold text-white shadow-sm transition hover:bg-[#023e8a] disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {rebuilding ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <RefreshCw size={14} />
-                    )}
+                    {rebuilding ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
                     Rebuild pending
                   </button>
                   <span className="w-full rounded-full bg-emerald-50 px-2.5 py-1 text-center text-[11px] font-bold text-emerald-700">
@@ -587,9 +676,7 @@ export default function ConfigurationRulesPage() {
                             >
                               <span
                                 className={`flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg ${
-                                  hidden
-                                    ? 'bg-slate-200 text-slate-400'
-                                    : 'bg-slate-100 text-[#0077b6]'
+                                  hidden ? 'bg-slate-200 text-slate-400' : 'bg-slate-100 text-[#0077b6]'
                                 }`}
                               >
                                 {IconComponent && <IconComponent size={15} />}
@@ -622,15 +709,11 @@ export default function ConfigurationRulesPage() {
                 </div>
                 <div className="mt-4 flex items-center justify-between rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5">
                   <p className="text-[11px] font-bold text-amber-700">
-                    Hidden items stay hidden only in this browser (per user). Nothing is deleted or
-                    disabled.
+                    Hidden items stay hidden only in this browser (per user). Nothing is deleted or disabled.
                   </p>
                   <button
                     type="button"
-                    onClick={() => {
-                      setHiddenMenus([]);
-                      localStorage.setItem(HUB_HIDDEN_MENUS_KEY, '[]');
-                    }}
+                    onClick={() => { setHiddenMenus([]); localStorage.setItem(HUB_HIDDEN_MENUS_KEY, '[]'); }}
                     className="flex h-8 flex-shrink-0 items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-2.5 text-[11px] font-extrabold text-amber-700 shadow-sm transition hover:bg-amber-100"
                   >
                     <EyeOff size={13} /> Show all
@@ -638,6 +721,7 @@ export default function ConfigurationRulesPage() {
                 </div>
               </SectionCard>
             </div>
+
           </div>
         )}
       </main>

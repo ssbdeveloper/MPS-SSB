@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Iterable
 
@@ -71,24 +72,124 @@ def plant_code() -> str:
     return env_value("PLANT_SSB")
 
 
-def normalize_max_record_minutes(raw) -> dict:
-    if isinstance(raw, dict):
-        result = {}
-        for key in ("va", "nnva", "nva"):
-            try:
-                result[key] = max(1, int(raw.get(key) or 90))
-            except (TypeError, ValueError):
-                result[key] = 90
-        return result
+MAX_RECORD_CATEGORIES = ("va", "nnva", "nva")
+MAX_RECORD_DEFAULT_MINUTES = 90
+NOT_STAGED_STATUSIDS = (0, 3, 4)
+
+
+def _parse_minutes(value):
+    
     try:
-        value = max(1, int(raw or 90))
+        minutes = int(value)
     except (TypeError, ValueError):
-        value = 90
-    return {"va": value, "nnva": value, "nva": value}
+        return None
+    return minutes if minutes >= 1 else None
+
+
+def _normalize_type_map(raw, key_pattern) -> dict:
+    
+    if not isinstance(raw, dict):
+        return {}
+    result = {}
+    for key, value in raw.items():
+        text = str(key)
+        if not re.fullmatch(key_pattern, text):
+            continue
+        if value is None:
+            result[text] = None
+            continue
+        minutes = _parse_minutes(value)
+        if minutes is not None:
+            result[text] = minutes
+    return result
+
+
+def legacy_category_minutes(raw):
+    
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        present = [k for k in MAX_RECORD_CATEGORIES if raw.get(k) is not None]
+        if not present:
+            return None
+        return {
+            key: (_parse_minutes(raw.get(key)) or MAX_RECORD_DEFAULT_MINUTES)
+            for key in MAX_RECORD_CATEGORIES
+        }
+    minutes = _parse_minutes(raw)
+    if minutes is None:
+        return None
+    return {key: minutes for key in MAX_RECORD_CATEGORIES}
+
+
+def category_of_activitytype(activitytype) -> str:
+    value = str(activitytype or "").strip().upper()
+    if value == "M1":
+        return "va"
+    if value == "M2":
+        return "nnva"
+    return "nva"
+
+
+def normalize_max_record_minutes(raw) -> dict:
+    
+    src = raw if isinstance(raw, dict) else {}
+    return {
+        "mch": _normalize_type_map(src.get("mch"), r"\d+"),
+        "timesheet": _normalize_type_map(src.get("timesheet"), r"\d*"),
+    }
+
+
+def load_activity_catalog(conn) -> dict:
+    
+    mch = []
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT statusid, activitytype FROM public.mch_statustypes ORDER BY statusid"
+        )
+        for statusid, activitytype in cur.fetchall():
+            mch.append(
+                {
+                    "statusid": int(statusid),
+                    "category": category_of_activitytype(activitytype),
+                }
+            )
+    timesheet = [{"activitytype": "", "category": "va"}]
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT activitytype FROM ews.activity_type_ref ORDER BY activitytype"
+            )
+            for (activitytype,) in cur.fetchall():
+                timesheet.append(
+                    {"activitytype": str(activitytype or "").strip(), "category": "nva"}
+                )
+    except Exception as exc:
+        logging.getLogger("sap_staging").warning(
+            "load_activity_catalog: ews.activity_type_ref tidak terbaca (%s)", exc
+        )
+    return {"mch": mch, "timesheet": timesheet}
+
+
+def expand_legacy_into_type_maps(max_record: dict, legacy, catalog) -> dict:
+    
+    if not legacy or not catalog:
+        return max_record
+    mch = dict(max_record.get("mch") or {})
+    timesheet = dict(max_record.get("timesheet") or {})
+    for row in catalog.get("mch", []):
+        key = str(row["statusid"])
+        if key not in mch:
+            mch[key] = legacy.get(row["category"], MAX_RECORD_DEFAULT_MINUTES)
+    for row in catalog.get("timesheet", []):
+        key = str(row.get("activitytype") or "")
+        if key not in timesheet:
+            timesheet[key] = legacy.get(row["category"], MAX_RECORD_DEFAULT_MINUTES)
+    return {"mch": mch, "timesheet": timesheet}
 
 
 def load_sap_rules(conn) -> dict:
-
+    
     DEFAULT_RULES = {
         "break_windows": [
             {"start": "12:00", "end": "13:00", "days": [1, 2, 3, 4, 5, 6, 0]},
@@ -96,28 +197,47 @@ def load_sap_rules(conn) -> dict:
             {"start": "18:30", "end": "19:00", "days": [6, 0]},
             {"start": "22:00", "end": "22:30", "days": [6, 0]},
         ],
-        "max_record_minutes": {"va": 90, "nnva": 90, "nva": 90},
+        "max_record_minutes": {"mch": {}, "timesheet": {}},
+        "max_record_fallback": {
+            key: MAX_RECORD_DEFAULT_MINUTES for key in MAX_RECORD_CATEGORIES
+        },
     }
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT sap_rules FROM public.plant_config WHERE id = 1 LIMIT 1")
+            cur.execute(
+                "SELECT sap_rules FROM public.plant_config WHERE id = 1 LIMIT 1"
+            )
             row = cur.fetchone()
         raw = (row[0] if row else None) or {}
         rules = dict(DEFAULT_RULES)
         rules.update({k: v for k, v in raw.items() if v is not None})
         if not isinstance(rules.get("break_windows"), list):
             rules["break_windows"] = list(DEFAULT_RULES["break_windows"])
-        rules["max_record_minutes"] = normalize_max_record_minutes(
-            rules.get("max_record_minutes", 90)
-        )
+        raw_max = raw.get("max_record_minutes")
+        max_record = normalize_max_record_minutes(raw_max)
+        legacy = legacy_category_minutes(raw_max)
+        if legacy:
+            try:
+                max_record = expand_legacy_into_type_maps(
+                    max_record, legacy, load_activity_catalog(conn)
+                )
+            except Exception as exc:
+                logging.getLogger("sap_staging").warning(
+                    "load_sap_rules: katalog aktivitas gagal dibaca, pakai fallback kategori (%s)",
+                    exc,
+                )
+        rules["max_record_minutes"] = max_record
+        rules["max_record_fallback"] = legacy
         return rules
-    except Exception as exc:
-        logging.getLogger("sap_staging").warning("load_sap_rules fallback ke default (%s)", exc)
+    except Exception as exc:  
+        logging.getLogger("sap_staging").warning(
+            "load_sap_rules fallback ke default (%s)", exc
+        )
         return dict(DEFAULT_RULES)
 
 
 def load_sap_rules_default() -> dict:
-
+    
     return {
         "break_windows": [
             {"start": "12:00", "end": "13:00", "days": [1, 2, 3, 4, 5, 6, 0]},
@@ -125,12 +245,17 @@ def load_sap_rules_default() -> dict:
             {"start": "18:30", "end": "19:00", "days": [6, 0]},
             {"start": "22:00", "end": "22:30", "days": [6, 0]},
         ],
-        "max_record_minutes": {"va": 90, "nnva": 90, "nva": 90},
+        "max_record_minutes": {"mch": {}, "timesheet": {}},
+        "max_record_fallback": {
+            key: MAX_RECORD_DEFAULT_MINUTES for key in MAX_RECORD_CATEGORIES
+        },
     }
 
 
 def app_timezone() -> str:
-
+    
+    
+    
     return env_value("TIMEZONE", "Asia/Makassar")
 
 
@@ -145,9 +270,7 @@ def quote_identifier(identifier: str) -> str:
 
 
 def quote_table_name(table_name: str) -> str:
-    return ".".join(
-        quote_identifier(part.strip()) for part in table_name.split(".") if part.strip()
-    )
+    return ".".join(quote_identifier(part.strip()) for part in table_name.split(".") if part.strip())
 
 
 DDL = """
@@ -379,7 +502,10 @@ def insert_staging_rows(conn, rows: list[dict]) -> int:
         for row in rows
     ]
     columns_sql = ", ".join(STAGING_COLUMNS)
-
+    
+    
+    
+    
     data_columns = [c for c in STAGING_COLUMNS if c not in ("source_system", "source_key")]
     set_sql = ", ".join(f"{c} = EXCLUDED.{c}" for c in data_columns)
     conflict_sql = (
@@ -411,6 +537,11 @@ def insert_staging_rows(conn, rows: list[dict]) -> int:
     return max(inserted, 0)
 
 
+
+
+
+
+
 PROVENANCE_INSERT_SQL = """
 INSERT INTO sap_staging_source (staging_id, source_system, source_row_id, bucket_start, seconds)
 VALUES %s
@@ -421,11 +552,18 @@ ON CONFLICT (staging_id, source_system, source_row_id, bucket_start) DO UPDATE
 
 
 def insert_provenance(cur, rows: list[dict]) -> int:
-
-    keyed = {(row["source_system"], row["source_key"]): row for row in rows if row.get("segments")}
+    
+    keyed = {
+        (row["source_system"], row["source_key"]): row
+        for row in rows
+        if row.get("segments")
+    }
     if not keyed:
         return 0
 
+    
+    
+    
     cur.execute(
         """
         SELECT id, source_system, source_key, bucket_start

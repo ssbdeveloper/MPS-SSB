@@ -1,9 +1,13 @@
-const pool = global.pool || require('../db');
-const { resolveTimezone } = require('../config/timezone');
-const { classifySapError } = require('../utils/sapErrorClassifier');
-const ExcelJS = require('exceljs');
+const pool = global.pool || require("../db");
+const { resolveTimezone } = require("../config/timezone");
+const { classifySapError } = require("../utils/sapErrorClassifier");
+const ExcelJS = require("exceljs");
+
+
+
 
 const TZ = resolveTimezone();
+
 
 const meta = () => ({ generated_at: new Date().toISOString() });
 let operationsHubCache = null;
@@ -16,12 +20,13 @@ function num(value, fallback = 0) {
 
 async function refreshOrderMatviews() {
   try {
-    await pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_order_plan_vs_actual');
-    await pool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_order_activity_detail');
+    await pool.query("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_order_plan_vs_actual");
+    await pool.query("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_order_activity_detail");
   } catch (err) {
-    console.error('refreshOrderMatviews error:', err.message);
+    console.error("refreshOrderMatviews error:", err.message);
   }
 }
+
 
 async function getOrderProgress(req, res) {
   try {
@@ -38,13 +43,18 @@ async function getOrderProgress(req, res) {
       )`);
     }
     if (filter === 'red') {
-      where.push('m.total_actual_hours >= m.total_planhours');
+      where.push("m.total_actual_hours >= m.total_planhours");
     } else if (filter === 'yellow') {
-      where.push(
-        'm.total_actual_hours >= m.total_planhours * 0.9 AND m.total_actual_hours < m.total_planhours'
-      );
+      where.push("m.total_actual_hours >= m.total_planhours * 0.9 AND m.total_actual_hours < m.total_planhours");
     }
 
+    
+    
+    
+    
+    
+    
+    
     const MV_ADJUSTED = `
       WITH subcont AS (
         SELECT ltrim(s.order_no, '0') AS order_key,
@@ -75,14 +85,11 @@ async function getOrderProgress(req, res) {
 
     const [totalResult, rowsResult] = await Promise.all([
       pool.query(countQuery),
-      pool.query(
-        `${baseQuery} ORDER BY actual_pct DESC NULLS LAST, total_planhours DESC LIMIT $1 OFFSET $2`,
-        [limit, offset]
-      ),
+      pool.query(`${baseQuery} ORDER BY actual_pct DESC NULLS LAST, total_planhours DESC LIMIT $1 OFFSET $2`, [limit, offset]),
     ]);
 
     res.json({
-      data: rowsResult.rows.map((r) => ({
+      data: rowsResult.rows.map(r => ({
         ...r,
         total_planhours: num(r.total_planhours),
         total_actual_hours: num(r.total_actual_hours),
@@ -93,15 +100,16 @@ async function getOrderProgress(req, res) {
       meta: meta(),
     });
   } catch (err) {
-    console.error('order-progress error:', err);
+    console.error("order-progress error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
 async function getOrderActivityDetail(req, res) {
   try {
     const { orderNo } = req.params;
-    if (!orderNo) return res.status(400).json({ error: 'orderNo required' });
+    if (!orderNo) return res.status(400).json({ error: "orderNo required" });
 
     const result = await pool.query(
       `SELECT * FROM mv_order_activity_detail WHERE order_no = $1 ORDER BY operation_no`,
@@ -109,7 +117,7 @@ async function getOrderActivityDetail(req, res) {
     );
 
     res.json({
-      data: result.rows.map((r) => ({
+      data: result.rows.map(r => ({
         ...r,
         planhours: num(r.planhours),
         actual_hours: num(r.actual_hours),
@@ -119,16 +127,16 @@ async function getOrderActivityDetail(req, res) {
       meta: meta(),
     });
   } catch (err) {
-    console.error('order-activity-detail error:', err);
+    console.error("order-activity-detail error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
 async function getOperationTimesheetHistory(req, res) {
   try {
     const { orderNo, operationNo } = req.query;
-    if (!orderNo || !operationNo)
-      return res.status(400).json({ error: 'orderNo and operationNo required' });
+    if (!orderNo || !operationNo) return res.status(400).json({ error: "orderNo and operationNo required" });
 
     const result = await pool.query(
       `SELECT
@@ -148,7 +156,7 @@ async function getOperationTimesheetHistory(req, res) {
 
     res.json({ data: result.rows, meta: meta() });
   } catch (err) {
-    console.error('operation-timesheet-history error:', err);
+    console.error("operation-timesheet-history error:", err);
     res.status(500).json({ error: err.message });
   }
 }
@@ -157,7 +165,7 @@ async function getOperationsHub(req, res) {
   let client;
   try {
     if (operationsHubCache && Date.now() - operationsHubCache.createdAt < OPERATIONS_HUB_TTL_MS) {
-      res.set('X-Cache', 'HIT');
+      res.set("X-Cache", "HIT");
       res.json(operationsHubCache.payload);
       return;
     }
@@ -420,22 +428,23 @@ async function getOperationsHub(req, res) {
     };
 
     operationsHubCache = { createdAt: Date.now(), payload };
-    res.set('X-Cache', 'MISS');
+    res.set("X-Cache", "MISS");
     res.json(payload);
   } catch (err) {
-    console.error('dashboard operations-hub error:', err);
+    console.error("dashboard operations-hub error:", err);
     res.status(500).json({ error: err.message });
   } finally {
     if (client) client.release();
   }
 }
 
+
 async function getSapTimesheetStagingLog(req, res) {
   try {
     const limit = Math.min(100, Math.max(10, parseInt(req.query.limit, 10) || 30));
     const cursor = Number.parseInt(req.query.cursor, 10);
-    const status = String(req.query.status || 'all').toUpperCase();
-    const search = String(req.query.search || '').trim();
+    const status = String(req.query.status || "all").toUpperCase();
+    const search = String(req.query.search || "").trim();
 
     const where = [];
     const params = [];
@@ -445,7 +454,7 @@ async function getSapTimesheetStagingLog(req, res) {
       where.push(`id < $${params.length}`);
     }
 
-    if (status !== 'ALL') {
+    if (status !== "ALL") {
       params.push(status);
       where.push(`status = $${params.length}`);
     }
@@ -469,7 +478,7 @@ async function getSapTimesheetStagingLog(req, res) {
       )`);
     }
 
-    const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
     params.push(limit + 1);
 
     const result = await pool.query(
@@ -512,6 +521,8 @@ async function getSapTimesheetStagingLog(req, res) {
     const rows = result.rows.slice(0, limit);
     const extraRow = result.rows[limit];
 
+    
+    
     const enriched = rows.map((row) => {
       const cause = classifySapError(row.sap_error || row.sap_response_text);
       return {
@@ -532,10 +543,13 @@ async function getSapTimesheetStagingLog(req, res) {
       meta: meta(),
     });
   } catch (err) {
-    console.error('sap-timesheet-staging-log error:', err);
+    console.error("sap-timesheet-staging-log error:", err);
     res.status(500).json({ error: err.message });
   }
 }
+
+
+
 
 async function getSapTimesheetStagingSummary(req, res) {
   try {
@@ -553,7 +567,7 @@ async function getSapTimesheetStagingSummary(req, res) {
           COUNT(*) FILTER (WHERE status = 'POSTED'  AND posted_at::date   = (now() AT TIME ZONE '${TZ}')::date)::int AS posted_today
         FROM public.sap_timesheet_staging
       `),
-
+      
       pool.query(`
         SELECT id, status, sap_error, sap_response_text
         FROM public.sap_timesheet_staging
@@ -569,6 +583,7 @@ async function getSapTimesheetStagingSummary(req, res) {
       total += r.n;
     }
 
+    
     const groups = new Map();
     for (const r of failing.rows) {
       const cause = classifySapError(r.sap_error || r.sap_response_text);
@@ -604,12 +619,16 @@ async function getSapTimesheetStagingSummary(req, res) {
       meta: meta(),
     });
   } catch (err) {
-    console.error('sap-timesheet-staging-summary error:', err);
+    console.error("sap-timesheet-staging-summary error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
-const SAP_ELIGIBLE_SQL = 'm.status_record';
+
+
+
+
+const SAP_ELIGIBLE_SQL = "m.status_record";
 
 const POSTED_EXISTS_SQL = `EXISTS (
   SELECT 1 FROM public.sap_staging_source s
@@ -617,6 +636,11 @@ const POSTED_EXISTS_SQL = `EXISTS (
     AND s.source_row_id = m.proddataid::text
     AND s.posted_at IS NOT NULL
 )`;
+
+
+
+
+
 
 const INELIGIBLE_REASON_SQL = `CASE
   WHEN m.enddatetime IS NULL THEN 'Not finished (no end time)'
@@ -628,20 +652,24 @@ const INELIGIBLE_REASON_SQL = `CASE
   ELSE NULL
 END`;
 
-const DISPLAY_EXCLUDE_SQL = 'm.statusid NOT IN (0, 3, 4)';
+
+
+const DISPLAY_EXCLUDE_SQL = "m.statusid NOT IN (0, 3, 4)";
 
 function clampDateRange(fromRaw, toRaw, defaultDays = 7, maxDays = 62) {
-  const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
+  const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
   let to = isDate(toRaw) ? new Date(`${toRaw}T00:00:00Z`) : new Date();
   let from = isDate(fromRaw) ? new Date(`${fromRaw}T00:00:00Z`) : null;
   const day = 86400000;
   if (!from) from = new Date(to.getTime() - (defaultDays - 1) * day);
   if (from > to) [from, to] = [to, from];
-
+  
   if ((to - from) / day > maxDays) from = new Date(to.getTime() - maxDays * day);
   const iso = (d) => d.toISOString().slice(0, 10);
   return { from: iso(from), to: iso(to) };
 }
+
+
 
 async function getMachineHoursMatrix(req, res) {
   try {
@@ -667,6 +695,7 @@ async function getMachineHoursMatrix(req, res) {
       [from, to]
     );
 
+    
     const days = [];
     const dayCursor = new Date(`${from}T00:00:00Z`);
     const end = new Date(`${to}T00:00:00Z`);
@@ -678,15 +707,10 @@ async function getMachineHoursMatrix(req, res) {
     const opMap = new Map();
     const cells = {};
     for (const r of result.rows) {
-      const dayStr =
-        typeof r.day === 'string' ? r.day.slice(0, 10) : new Date(r.day).toISOString().slice(0, 10);
+      const dayStr = typeof r.day === "string" ? r.day.slice(0, 10) : new Date(r.day).toISOString().slice(0, 10);
       const op = opMap.get(r.operator_key) || {
-        operator_key: r.operator_key,
-        operator_name: r.operator_name,
-        total_h: 0,
-        eligible_h: 0,
-        posted_h: 0,
-        n_records: 0,
+        operator_key: r.operator_key, operator_name: r.operator_name,
+        total_h: 0, eligible_h: 0, posted_h: 0, n_records: 0,
       };
       op.total_h += Number(r.total_h);
       op.eligible_h += Number(r.eligible_h || 0);
@@ -705,45 +729,48 @@ async function getMachineHoursMatrix(req, res) {
     const operators = [...opMap.values()].sort((a, b) => b.total_h - a.total_h);
     const totals = operators.reduce(
       (acc, o) => {
-        acc.total_h += o.total_h;
-        acc.eligible_h += o.eligible_h;
-        acc.posted_h += o.posted_h;
-        acc.n_records += o.n_records;
-        if (o.operator_key === '__none__') acc.unattributed_h += o.total_h;
+        acc.total_h += o.total_h; acc.eligible_h += o.eligible_h;
+        acc.posted_h += o.posted_h; acc.n_records += o.n_records;
+        if (o.operator_key === "__none__") acc.unattributed_h += o.total_h;
         return acc;
       },
       { total_h: 0, eligible_h: 0, posted_h: 0, n_records: 0, unattributed_h: 0 }
     );
-    for (const k of ['total_h', 'eligible_h', 'posted_h', 'unattributed_h'])
-      totals[k] = Math.round(totals[k] * 10) / 10;
+    for (const k of ["total_h", "eligible_h", "posted_h", "unattributed_h"]) totals[k] = Math.round(totals[k] * 10) / 10;
 
     res.json({ data: { from, to, days, operators, cells, totals }, meta: meta() });
   } catch (err) {
-    console.error('machine-hours-matrix error:', err);
+    console.error("machine-hours-matrix error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
+
+
 async function getMachineHoursRecords(req, res) {
   try {
-    const operator = String(req.query.operator || '').trim();
-    const day = String(req.query.day || '').trim();
-    const bucket = String(req.query.bucket || 'all').trim();
+    const operator = String(req.query.operator || "").trim();
+    const day = String(req.query.day || "").trim();
+    const bucket = String(req.query.bucket || "all").trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
       return res.status(400).json({ error: "Parameter 'day' harus YYYY-MM-DD" });
     }
 
     const params = [day];
-    const where = [`(m.startdatetime AT TIME ZONE '${TZ}')::date = $1::date`, DISPLAY_EXCLUDE_SQL];
-    if (operator === '__none__') {
+    const where = [
+      `(m.startdatetime AT TIME ZONE '${TZ}')::date = $1::date`,
+      DISPLAY_EXCLUDE_SQL, 
+    ];
+    if (operator === "__none__") {
       where.push(`NULLIF(btrim(m.sn_employee),'') IS NULL`);
     } else if (operator) {
       params.push(operator);
       where.push(`m.sn_employee = $${params.length}`);
     }
-    if (bucket === 'eligible') where.push(`${SAP_ELIGIBLE_SQL} AND NOT ${POSTED_EXISTS_SQL}`);
-    else if (bucket === 'posted') where.push(POSTED_EXISTS_SQL);
-    else if (bucket === 'ineligible') where.push(`NOT ${SAP_ELIGIBLE_SQL}`);
+    if (bucket === "eligible") where.push(`${SAP_ELIGIBLE_SQL} AND NOT ${POSTED_EXISTS_SQL}`);
+    else if (bucket === "posted") where.push(POSTED_EXISTS_SQL);
+    else if (bucket === "ineligible") where.push(`NOT ${SAP_ELIGIBLE_SQL}`);
 
     const result = await pool.query(
       `
@@ -759,7 +786,7 @@ async function getMachineHoursRecords(req, res) {
         ${POSTED_EXISTS_SQL} AS posted,
         ${INELIGIBLE_REASON_SQL} AS ineligible_reason
       FROM public.mch_transaction m
-      WHERE ${where.join(' AND ')}
+      WHERE ${where.join(" AND ")}
       ORDER BY m.startdatetime
       LIMIT 500
       `,
@@ -768,15 +795,19 @@ async function getMachineHoursRecords(req, res) {
 
     res.json({ data: result.rows, meta: meta() });
   } catch (err) {
-    console.error('machine-hours-records error:', err);
+    console.error("machine-hours-records error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
+
+
 async function getPh3Jobs(req, res) {
   try {
-    const search = String(req.query.search || '').trim();
-
+    const search = String(req.query.search || "").trim();
+    
+    
     const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
     const params = [];
     let filter = "COALESCE(order_no,'') <> '' AND COALESCE(operation_no,'') <> ''";
@@ -787,6 +818,8 @@ async function getPh3Jobs(req, res) {
     }
     params.push(limit);
 
+    
+    
     const result = await pool.query(
       `
       SELECT order_no, operation_no, confirmation_number,
@@ -808,14 +841,16 @@ async function getPh3Jobs(req, res) {
     );
     res.json({ data: result.rows, meta: meta() });
   } catch (err) {
-    console.error('ph3-jobs error:', err);
+    console.error("ph3-jobs error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
+
 async function getOperators(req, res) {
   try {
-    const search = String(req.query.search || '').trim();
+    const search = String(req.query.search || "").trim();
     const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 30));
     const params = [];
     let filter = "NULLIF(btrim(snssb),'') IS NOT NULL";
@@ -834,10 +869,14 @@ async function getOperators(req, res) {
     );
     res.json({ data: result.rows, meta: meta() });
   } catch (err) {
-    console.error('operators error:', err);
+    console.error("operators error:", err);
     res.status(500).json({ error: err.message });
   }
 }
+
+
+
+
 
 async function saveMachineHoursOverride(req, res) {
   const client = await pool.connect();
@@ -847,32 +886,32 @@ async function saveMachineHoursOverride(req, res) {
     const operationNo = req.body?.operation_no ? String(req.body.operation_no).trim() : null;
     const snEmployee = req.body?.sn_employee ? String(req.body.sn_employee).trim() : null;
     const note = req.body?.note ? String(req.body.note).trim() : null;
-    const by = req.header('x-user-id') || null;
+    const by = req.header("x-user-id") || null;
 
     if (!Number.isFinite(proddataid)) {
-      return res.status(400).json({ error: 'proddataid is required' });
+      return res.status(400).json({ error: "proddataid is required" });
     }
     if (orderNo && !operationNo) {
-      return res.status(400).json({ error: 'operation_no is required when order_no is set' });
+      return res.status(400).json({ error: "operation_no is required when order_no is set" });
     }
     if (!orderNo && !snEmployee) {
-      return res.status(400).json({ error: 'Nothing to change (set a job or operator)' });
+      return res.status(400).json({ error: "Nothing to change (set a job or operator)" });
     }
 
+    
     const posted = await client.query(
       `SELECT 1 FROM public.sap_staging_source
         WHERE source_system='MCH_HOURS' AND source_row_id=$1::text AND posted_at IS NOT NULL LIMIT 1`,
       [proddataid]
     );
     if (posted.rows.length > 0) {
-      return res
-        .status(409)
-        .json({ error: 'Record already sent to SAP. A correction needs a storno in SAP first.' });
+      return res.status(409).json({ error: "Record already sent to SAP. A correction needs a storno in SAP first." });
     }
 
-    await client.query('BEGIN');
+    await client.query("BEGIN");
 
     if (orderNo) {
+      
       const upd = await client.query(
         `
         WITH j AS (
@@ -909,10 +948,8 @@ async function saveMachineHoursOverride(req, res) {
         [proddataid, orderNo, operationNo]
       );
       if (upd.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({
-          error: `Job ${orderNo}/${operationNo} not found in ph3_order, or record not found`,
-        });
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: `Job ${orderNo}/${operationNo} not found in ph3_order, or record not found` });
       }
     }
 
@@ -929,6 +966,7 @@ async function saveMachineHoursOverride(req, res) {
       );
     }
 
+    
     await client.query(
       `
       INSERT INTO public.mch_transaction_override (proddataid, order_no, operation_no, sn_employee, note, updated_by, updated_at)
@@ -944,8 +982,9 @@ async function saveMachineHoursOverride(req, res) {
       [proddataid, orderNo, operationNo, snEmployee, note, by]
     );
 
-    await client.query('COMMIT');
+    await client.query("COMMIT");
 
+    
     const fresh = await pool.query(
       `
       SELECT m.proddataid, m.order_no, m.operation_no, m.confirmation_number,
@@ -959,59 +998,64 @@ async function saveMachineHoursOverride(req, res) {
     );
     res.json({ data: fresh.rows[0] || null, meta: meta() });
   } catch (err) {
-    try {
-      await client.query('ROLLBACK');
-    } catch {}
-    console.error('machine-hours-override error:', err);
+    try { await client.query("ROLLBACK"); } catch {  }
+    console.error("machine-hours-override error:", err);
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
   }
 }
 
-async function enqueueSapOps(req, res) {
-  const ALLOWED = new Set(['stage_catchup', 'retry_failed', 'rebuild_pending', 'post_corrections', 'post_bundles', 'post_date', 'post_operator', 'recalc_date']);
-  try {
-    const action = String(req.body?.action || '').trim();
-    if (!ALLOWED.has(action)) {
-      return res.status(400).json({ error: `Unknown action: ${action || '(empty)'}` });
-    }
-    const requestedBy = req.header('x-user-id') || null;
-    const params = req.body?.params && typeof req.body.params === 'object' ? req.body.params : {};
 
-    if (action === 'rebuild_pending') {
-      const fromDate = String(params.from_date || '').trim();
+
+
+
+async function enqueueSapOps(req, res) {
+  const ALLOWED = new Set(["stage_catchup", "retry_failed", "rebuild_pending", "post_corrections", "post_bundles", "post_date", "post_operator", "recalc_date"]);
+  try {
+    const action = String(req.body?.action || "").trim();
+    if (!ALLOWED.has(action)) {
+      return res.status(400).json({ error: `Unknown action: ${action || "(empty)"}` });
+    }
+    const requestedBy = req.header("x-user-id") || null;
+    const params = req.body?.params && typeof req.body.params === "object" ? req.body.params : {};
+
+    
+    if (action === "rebuild_pending") {
+      const fromDate = String(params.from_date || "").trim();
       if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) {
-        return res
-          .status(400)
-          .json({ error: 'from_date (YYYY-MM-DD) is required for rebuild_pending' });
+        return res.status(400).json({ error: "from_date (YYYY-MM-DD) is required for rebuild_pending" });
       }
     }
-    if (action === 'post_bundles' || action === 'post_corrections') {
+    if (action === "post_bundles" || action === "post_corrections") {
       const ids = Array.isArray(params.ids) ? params.ids.filter((v) => String(v).trim()) : [];
       if (!ids.length) {
-        return res.status(400).json({ error: 'ids (array) is required for ' + action });
+        return res.status(400).json({ error: "ids (array) is required for " + action });
       }
     }
-    if (action === 'post_date' || action === 'recalc_date') {
-      const date = String(params.date || '').trim();
+    if (action === "post_date" || action === "recalc_date") {
+      const date = String(params.date || "").trim();
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-        return res.status(400).json({ error: 'date (YYYY-MM-DD) is required for ' + action });
+        return res.status(400).json({ error: "date (YYYY-MM-DD) is required for " + action });
       }
     }
-    if (action === 'post_operator') {
-      const pernr = String(params.pernr || '').trim();
+    if (action === "post_operator") {
+      const pernr = String(params.pernr || "").trim();
       if (!pernr) {
-        return res.status(400).json({ error: 'pernr is required for post_operator' });
+        return res.status(400).json({ error: "pernr is required for post_operator" });
       }
     }
 
+    
+    
+    
     await pool.query(
       `DELETE FROM public.sap_ops_request
        WHERE action = $1 AND status = 'QUEUED' AND requested_at < now() - interval '15 minutes'`,
       [action]
     );
 
+    
     let result;
     try {
       result = await pool.query(
@@ -1021,71 +1065,60 @@ async function enqueueSapOps(req, res) {
         [action, params, requestedBy]
       );
     } catch (err) {
-      if (err.code === '23505') {
-        return res.status(409).json({
-          error:
-            'A similar request is still running (or the ops-worker is not consuming the queue). Wait, or check the sap-ops-worker service.',
-        });
+      if (err.code === "23505") {
+        return res.status(409).json({ error: "A similar request is still running (or the ops-worker is not consuming the queue). Wait, or check the sap-ops-worker service." });
       }
       throw err;
     }
 
     res.status(202).json({ data: result.rows[0], meta: meta() });
   } catch (err) {
-    console.error('enqueueSapOps error:', err);
+    console.error("enqueueSapOps error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
+
 async function getSapCorrections(req, res) {
   try {
-    const status = String(req.query.status || 'PENDING').toUpperCase();
-    const search = String(req.query.search || '').trim();
-    const where = ['is_correction = true'];
+    const status = String(req.query.status || "PENDING").toUpperCase();
+    const search = String(req.query.search || "").trim();
+    const where = ["is_correction = true"];
     const params = [];
-    if (status !== 'ALL') {
-      params.push(status);
-      where.push(`status = $${params.length}`);
-    }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '')) {
-      params.push(req.query.from);
-      where.push(`bucket_start::date >= $${params.length}`);
-    }
-    if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '')) {
-      params.push(req.query.to);
-      where.push(`bucket_start::date <= $${params.length}`);
-    }
+    if (status !== "ALL") { params.push(status); where.push(`status = $${params.length}`); }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "")) { params.push(req.query.from); where.push(`bucket_start::date >= $${params.length}`); }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "")) { params.push(req.query.to); where.push(`bucket_start::date <= $${params.length}`); }
     if (search) {
       params.push(`%${search}%`);
-      where.push(
-        `(aufnr ILIKE $${params.length} OR pernr ILIKE $${params.length} OR arbpl ILIKE $${params.length})`
-      );
+      where.push(`(aufnr ILIKE $${params.length} OR pernr ILIKE $${params.length} OR arbpl ILIKE $${params.length})`);
     }
     const result = await pool.query(
       `SELECT id, ztimesheetid, status, bucket_start::date AS work_date, is_productive,
         aufnr, vornr, pernr, arbpl, lstar, zconf_type, total_seconds, source_row_count,
         sap_error, created_at, updated_at
        FROM public.sap_timesheet_staging
-       WHERE ${where.join(' AND ')}
+       WHERE ${where.join(" AND ")}
        ORDER BY bucket_start DESC, id DESC
        LIMIT 500`,
       params
     );
     res.json({ data: result.rows, meta: meta() });
   } catch (err) {
-    console.error('sap-corrections error:', err);
+    console.error("sap-corrections error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
+
+
 async function postCorrections(req, res) {
   try {
-    const ids = Array.isArray(req.body?.ids)
-      ? req.body.ids.map((n) => parseInt(n, 10)).filter(Number.isFinite)
-      : [];
-    if (!ids.length) return res.status(400).json({ error: 'No correction bundles selected' });
-    const requestedBy = req.header('x-user-id') || null;
-
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((n) => parseInt(n, 10)).filter(Number.isFinite) : [];
+    if (!ids.length) return res.status(400).json({ error: "No correction bundles selected" });
+    const requestedBy = req.header("x-user-id") || null;
+    
     await pool.query(
       `DELETE FROM public.sap_ops_request
        WHERE action = 'post_corrections' AND status = 'QUEUED' AND requested_at < now() - interval '15 minutes'`
@@ -1099,19 +1132,16 @@ async function postCorrections(req, res) {
         [JSON.stringify({ ids }), requestedBy]
       );
     } catch (err) {
-      if (err.code === '23505')
-        return res.status(409).json({
-          error:
-            'A correction-post request is still running (or the ops-worker is not consuming the queue). Wait, or check the sap-ops-worker service.',
-        });
+      if (err.code === "23505") return res.status(409).json({ error: "A correction-post request is still running (or the ops-worker is not consuming the queue). Wait, or check the sap-ops-worker service." });
       throw err;
     }
     res.status(202).json({ data: result.rows[0], meta: meta() });
   } catch (err) {
-    console.error('postCorrections error:', err);
+    console.error("postCorrections error:", err);
     res.status(500).json({ error: err.message });
   }
 }
+
 
 async function getSapOpsRequests(req, res) {
   try {
@@ -1123,39 +1153,41 @@ async function getSapOpsRequests(req, res) {
     );
     res.json({ data: result.rows, meta: meta() });
   } catch (err) {
-    console.error('getSapOpsRequests error:', err);
+    console.error("getSapOpsRequests error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
 async function getKpi(req, res) {
   try {
-    const [activeOrders, overdueOrders, todayHours, avgProgress] = await Promise.all([
-      pool.query(`
+    const [activeOrders, overdueOrders, todayHours, avgProgress] =
+      await Promise.all([
+        pool.query(`
           SELECT COUNT(DISTINCT order_no)::int AS count
           FROM sow
           WHERE systemstatus NOT IN ('TECO', 'CLSD')
         `),
-      pool.query(`
+        pool.query(`
           SELECT COUNT(DISTINCT order_no)::int AS count
           FROM sow
           WHERE plan_finish < CURRENT_DATE
             AND progress < 100
             AND systemstatus NOT IN ('TECO', 'CLSD')
         `),
-      pool.query(`
+        pool.query(`
           SELECT COALESCE(SUM(duration), 0)::numeric(10,2) AS total_hours
           FROM timesheet_transaction
           WHERE DATE(longdate_checkin AT TIME ZONE '${TZ}') = CURRENT_DATE
             AND state_flag != 5
         `),
-      pool.query(`
+        pool.query(`
           SELECT ROUND(AVG(avg_progress), 1) AS avg_progress
           FROM vw_sow_orders
           WHERE systemstatus NOT IN ('TECO', 'CLSD')
             AND avg_progress IS NOT NULL
         `),
-    ]);
+      ]);
 
     res.json({
       data: {
@@ -1170,6 +1202,7 @@ async function getKpi(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
 
 async function getOrderStatus(req, res) {
   try {
@@ -1186,6 +1219,7 @@ async function getOrderStatus(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
 
 async function getWorkload(req, res) {
   try {
@@ -1218,9 +1252,10 @@ async function getWorkload(req, res) {
   }
 }
 
+
 async function getDailyHours(req, res) {
   try {
-    const workcenter = req.query.workcenter || 'all';
+    const workcenter = req.query.workcenter || "all";
     const days = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
 
     const result = await pool.query(
@@ -1243,14 +1278,17 @@ async function getDailyHours(req, res) {
   }
 }
 
+
 async function getOperatorEfficiency(req, res) {
   try {
-    const workcenter = req.query.workcenter || 'all';
+    const workcenter = req.query.workcenter || "all";
     const now = new Date();
     const defaultFrom = new Date(now);
     defaultFrom.setDate(now.getDate() - 30);
 
-    const from = req.query.from ? new Date(req.query.from) : defaultFrom;
+    const from = req.query.from
+      ? new Date(req.query.from)
+      : defaultFrom;
     const to = req.query.to ? new Date(req.query.to) : now;
 
     const result = await pool.query(
@@ -1282,6 +1320,7 @@ async function getOperatorEfficiency(req, res) {
   }
 }
 
+
 async function getOntimeMonthly(req, res) {
   try {
     const result = await pool.query(`
@@ -1311,6 +1350,7 @@ async function getOntimeMonthly(req, res) {
   }
 }
 
+
 async function getProgressDistribution(req, res) {
   try {
     const result = await pool.query(`
@@ -1337,9 +1377,10 @@ async function getProgressDistribution(req, res) {
   }
 }
 
+
 async function getValidationRate(req, res) {
   try {
-    const workcenter = req.query.workcenter || 'all';
+    const workcenter = req.query.workcenter || "all";
 
     const result = await pool.query(
       `
@@ -1365,6 +1406,7 @@ async function getValidationRate(req, res) {
   }
 }
 
+
 async function getOperatorHeatmap(req, res) {
   try {
     const days = Math.min(90, Math.max(1, parseInt(req.query.days) || 30));
@@ -1389,6 +1431,7 @@ async function getOperatorHeatmap(req, res) {
   }
 }
 
+
 async function getWorkcenterList(req, res) {
   try {
     const result = await pool.query(`
@@ -1402,6 +1445,9 @@ async function getWorkcenterList(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+
+
 
 const MCH_SAP_ELIGIBLE = `
   COALESCE(m.end_effective, m.enddatetime) > m.startdatetime
@@ -1422,6 +1468,8 @@ const MCH_SAP_ELIGIBLE = `
   AND (m.statusid <> 5 OR COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime))) <= 60)
 `;
 
+
+
 const CLAMPED_SEG_SECONDS = `
   GREATEST(EXTRACT(EPOCH FROM (
     LEAST(COALESCE(m.end_effective, m.enddatetime), src.bucket_start + interval '1 day')
@@ -1429,50 +1477,219 @@ const CLAMPED_SEG_SECONDS = `
   ))::bigint, 0)
 `;
 
-async function loadMaxRecordMinutes() {
+
+
+
+const {
+  normalizeMaxRecordMinutes,
+  legacyCategoryMinutes,
+  expandLegacyIntoTypeMaps,
+  loadActivityCatalog,
+} = require("./configRulesController");
+
+async function loadMaxRecordConfig() {
   try {
-    const r = await pool.query('SELECT sap_rules FROM public.plant_config WHERE id = 1 LIMIT 1');
+    const r = await pool.query("SELECT sap_rules FROM public.plant_config WHERE id = 1 LIMIT 1");
     const raw = r.rows[0]?.sap_rules || {};
-    const m = raw.max_record_minutes;
-    const pick = (v) => {
-      const n = Number.parseInt(v, 10);
-      return Number.isFinite(n) && n >= 1 ? n : 90;
-    };
-    if (m && typeof m === 'object') return { va: pick(m.va), nnva: pick(m.nnva), nva: pick(m.nva) };
-    const v = pick(m);
-    return { va: v, nnva: v, nva: v };
+    const maps = normalizeMaxRecordMinutes(raw.max_record_minutes);
+    const legacy = legacyCategoryMinutes(raw.max_record_minutes);
+    if (!legacy) return { ...maps, fallback: null };
+    const catalog = await loadActivityCatalog().catch(() => null);
+    const expanded = catalog ? expandLegacyIntoTypeMaps(maps, legacy, catalog) : maps;
+    return { ...expanded, fallback: legacy };
   } catch (err) {
-    console.error('loadMaxRecordMinutes error:', err.message);
-    return { va: 90, nnva: 90, nva: 90 };
+    console.error("loadMaxRecordConfig error:", err.message);
+    return { mch: {}, timesheet: {}, fallback: { va: 90, nnva: 90, nva: 90 } };
   }
 }
 
-const CAP_CUT_SECONDS = (va, nnva, nva) => `
+
+
+const jsonbLiteral = (obj) => `'${JSON.stringify(obj || {}).replace(/'/g, "''")}'::jsonb`;
+const intOrNull = (v) => {
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) && n >= 1 ? String(n) : "NULL";
+};
+
+
+
+const MCH_CAP_MINUTES = (cfg) => {
+  const L = jsonbLiteral(cfg.mch);
+  const fb = cfg.fallback || {};
+  return `(CASE
+      WHEN jsonb_typeof(${L} -> m.statusid::text) = 'null' THEN NULL
+      WHEN (${L} ->> m.statusid::text) ~ '^[0-9]+$' THEN (${L} ->> m.statusid::text)::int
+      WHEN m.status_activitytype = 'M1' THEN ${intOrNull(fb.va)}
+      WHEN m.status_activitytype = 'M2'
+        OR (m.statusid = 2 AND m.previoustatusid = 1
+            AND COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime))) <= 300)
+        THEN ${intOrNull(fb.nnva)}
+      ELSE ${intOrNull(fb.nva)}
+    END)`;
+};
+
+
+
+const CAP_CUT_SECONDS = (cfg) => `
   GREATEST(
     EXTRACT(EPOCH FROM (COALESCE(m.end_effective, m.enddatetime) - m.startdatetime))
-    - (CASE
-        WHEN m.status_activitytype = 'M1' THEN ${va}
-        WHEN m.status_activitytype = 'M2'
-          OR (m.statusid = 2 AND m.previoustatusid = 1
-              AND COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime))) <= 300)
-          THEN ${nnva}
-        ELSE ${nva}
-      END * 60),
+    - (${MCH_CAP_MINUTES(cfg)} * 60),
     0
   )`;
 
-const END_CAPPED_EXPR = (va, nnva, nva) => `
+
+
+const END_CAPPED_EXPR = (cfg) => `
   LEAST(
     COALESCE(m.end_effective, m.enddatetime),
-    m.startdatetime + (CASE
-        WHEN m.status_activitytype = 'M1' THEN ${va}
-        WHEN m.status_activitytype = 'M2'
-          OR (m.statusid = 2 AND m.previoustatusid = 1
-              AND COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime))) <= 300)
-          THEN ${nnva}
-        ELSE ${nva}
-      END || ' minutes')::interval
+    m.startdatetime + (${MCH_CAP_MINUTES(cfg)} || ' minutes')::interval
   )`;
+
+
+
+const TS_CAP_MINUTES = (cfg) => {
+  const L = jsonbLiteral(cfg.timesheet);
+  const fb = cfg.fallback || {};
+  return `(CASE
+      WHEN jsonb_typeof(${L} -> BTRIM(COALESCE(t.activitytype, ''))) = 'null' THEN NULL
+      WHEN (${L} ->> BTRIM(COALESCE(t.activitytype, ''))) ~ '^[0-9]+$'
+        THEN (${L} ->> BTRIM(COALESCE(t.activitytype, '')))::int
+      WHEN BTRIM(COALESCE(t.activitytype, '')) = '' THEN ${intOrNull(fb.va)}
+      ELSE ${intOrNull(fb.nva)}
+    END)`;
+};
+
+const TS_RAW_SECONDS = `EXTRACT(EPOCH FROM (t.longdate_checkout - t.longdate_checkin))::bigint`;
+
+
+
+
+const TS_BREAK_CUT_SECONDS = `
+  COALESCE((
+    SELECT SUM(EXTRACT(EPOCH FROM (
+      LEAST(seg.seg_end, g.day_bucket + (bw->>'end')::time)
+        - GREATEST(seg.seg_start, g.day_bucket + (bw->>'start')::time)
+    ))::bigint)
+    FROM generate_series(
+      date_trunc('day', t.longdate_checkin AT TIME ZONE '${TZ}'),
+      date_trunc('day', t.longdate_checkout AT TIME ZONE '${TZ}'),
+      interval '1 day'
+    ) AS g(day_bucket)
+    CROSS JOIN LATERAL (
+      SELECT GREATEST(t.longdate_checkin AT TIME ZONE '${TZ}', g.day_bucket) AS seg_start,
+             LEAST(t.longdate_checkout AT TIME ZONE '${TZ}', g.day_bucket + interval '1 day') AS seg_end
+    ) seg
+    CROSS JOIN LATERAL jsonb_array_elements(
+      COALESCE((SELECT sap_rules->'break_windows' FROM public.plant_config WHERE id = 1), '[]'::jsonb)
+    ) bw
+    CROSS JOIN LATERAL jsonb_array_elements_text(bw->'days') d(day)
+    WHERE d.day::int = EXTRACT(DOW FROM g.day_bucket)::int
+      AND BTRIM(COALESCE(t.activitytype, '')) <> ''
+      AND seg.seg_start < g.day_bucket + (bw->>'end')::time
+      AND seg.seg_end > g.day_bucket + (bw->>'start')::time
+  ), 0)::bigint`;
+
+
+const TS_CAP_CUT_SECONDS = (cfg) => `
+  GREATEST(
+    GREATEST(${TS_RAW_SECONDS} - (${TS_BREAK_CUT_SECONDS}), 0)
+    - (${TS_CAP_MINUTES(cfg)}::bigint * 60),
+    0
+  )`;
+
+
+
+
+
+
+function buildRecordsSql(cfg, { source = "all", search = false } = {}) {
+  const cutSec = CAP_CUT_SECONDS(cfg);
+  const endCapped = END_CAPPED_EXPR(cfg);
+  const tsCut = TS_CAP_CUT_SECONDS(cfg);
+  const mchSearch = search
+    ? "AND (m.sn_employee ILIKE $3 OR u.full_name ILIKE $3 OR m.machinename ILIKE $3 OR m.order_no ILIKE $3)"
+    : "";
+  const tsSearch = search
+    ? "AND (t.serialnumber ILIKE $3 OR u.full_name ILIKE $3 OR t.workcentercode ILIKE $3 OR COALESCE(t.order_no,'') ILIKE $3)"
+    : "";
+
+  const mchSql = `
+    SELECT
+      'MCH_HOURS'::text AS source,
+      st.bucket_start::date AS sort_day,
+      to_char(st.bucket_start AT TIME ZONE '${TZ}', 'YYYY-MM-DD') AS date,
+      st.id AS staging_id, st.status AS bundle_status, st.is_productive AS bundle_productive,
+      m.proddataid::text AS source_row_id,
+      m.sn_employee AS pernr, COALESCE(u.full_name, '') AS name,
+      COALESCE(m.machinename, '') AS machine,
+      COALESCE(m.status_activitytype, '') AS activity,
+      COALESCE(m.status_description, '') AS status_desc,
+      to_char(m.startdatetime, 'YYYY-MM-DD HH24:MI:SS') AS start,
+      to_char(m.enddatetime, 'YYYY-MM-DD HH24:MI:SS') AS end_orig,
+      to_char(${endCapped}, 'YYYY-MM-DD HH24:MI:SS') AS end_capped,
+      COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime)))::bigint AS raw,
+      (${CLAMPED_SEG_SECONDS})::bigint AS clamped,
+      (${cutSec})::bigint AS capcut,
+      (${BREAK_CUT_SECONDS}) AS breakcut,
+      (${CLAMPED_SEG_SECONDS} - ${cutSec} - ${BREAK_CUT_SECONDS})::bigint AS recognized,
+      COALESCE(m.order_no, '') AS order_no, COALESCE(m.operation_no, '') AS operation_no,
+      COALESCE(NULLIF(m.operation_short_text, ''), m.operation_description) AS operation_text,
+      COALESCE(m.confirmation_number, '') AS confirmation,
+      COALESCE(m.is_stuck, false) AS stuck,
+      (ex2.source_row_id IS NOT NULL) AS excluded,
+      true AS can_exclude
+    FROM public.sap_staging_source src
+    JOIN public.sap_timesheet_staging st ON st.id = src.staging_id
+    JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
+    LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
+    LEFT JOIN public.sap_staging_exclusion ex2
+      ON ex2.source_system = 'MCH_HOURS' AND ex2.source_row_id = m.proddataid::text
+    WHERE src.source_system = 'MCH_HOURS'
+      AND st.bucket_start::date BETWEEN $1::date AND $2::date ${mchSearch}`;
+
+  
+  
+  
+  const tsSql = `
+    SELECT
+      'TIMESHEET'::text AS source,
+      st.source_min_start::date AS sort_day,
+      to_char(st.source_min_start, 'YYYY-MM-DD') AS date,
+      st.id AS staging_id, st.status AS bundle_status, st.is_productive AS bundle_productive,
+      t.tsnumber::text AS source_row_id,
+      COALESCE(NULLIF(st.pernr_origin, ''), st.pernr) AS pernr, COALESCE(u.full_name, '') AS name,
+      COALESCE(t.workcentercode, '') AS machine,
+      BTRIM(COALESCE(t.activitytype, '')) AS activity,
+      COALESCE(NULLIF(r.description, ''),
+               CASE WHEN BTRIM(COALESCE(t.activitytype, '')) = '' THEN 'Productive (order work)' ELSE '' END) AS status_desc,
+      to_char(t.longdate_checkin AT TIME ZONE '${TZ}', 'YYYY-MM-DD HH24:MI:SS') AS start,
+      to_char(t.longdate_checkout AT TIME ZONE '${TZ}', 'YYYY-MM-DD HH24:MI:SS') AS end_orig,
+      to_char((t.longdate_checkin AT TIME ZONE '${TZ}') + (st.total_seconds || ' seconds')::interval,
+              'YYYY-MM-DD HH24:MI:SS') AS end_capped,
+      ${TS_RAW_SECONDS} AS raw,
+      ${TS_RAW_SECONDS} AS clamped,
+      (${tsCut})::bigint AS capcut,
+      (${TS_BREAK_CUT_SECONDS}) AS breakcut,
+      st.total_seconds::bigint AS recognized,
+      COALESCE(t.order_no, '') AS order_no, COALESCE(t.operation_no::text, '') AS operation_no,
+      NULL::text AS operation_text,
+      COALESCE(st.rueck, '') AS confirmation,
+      false AS stuck,
+      false AS excluded,
+      false AS can_exclude
+    FROM public.sap_timesheet_staging st
+    JOIN public.timesheet_transaction t ON t.tsnumber::text = st.source_key
+    LEFT JOIN public.usernfc u ON u.snssb = COALESCE(NULLIF(st.pernr_origin, ''), st.pernr)
+    LEFT JOIN ews.activity_type_ref r ON r.activitytype = BTRIM(COALESCE(t.activitytype, ''))
+    WHERE st.source_system = 'TIMESHEET'
+      AND st.source_min_start::date BETWEEN $1::date AND $2::date ${tsSearch}`;
+
+  if (source === "mch") return mchSql;
+  if (source === "timesheet") return tsSql;
+  return `${mchSql}\n    UNION ALL\n${tsSql}`;
+}
+
+
 
 const BREAK_CUT_SECONDS = `
   COALESCE((
@@ -1489,18 +1706,21 @@ const BREAK_CUT_SECONDS = `
   ), 0)::bigint
 `;
 
+
 async function loadSapReconciliationData(fromDate, toDate) {
   const { rows: rr } = await pool.query(
     `SELECT COALESCE($1::date, (now() AT TIME ZONE '${TZ}')::date - 29) AS from_d,
             COALESCE($2::date, (now() AT TIME ZONE '${TZ}')::date)      AS to_d`,
-    [fromDate, toDate]
+    [fromDate, toDate],
   );
   const fromD = rr[0].from_d;
   const toD = rr[0].to_d;
-  const caps = await loadMaxRecordMinutes();
-  const cutSec = CAP_CUT_SECONDS(caps.va, caps.nnva, caps.nva);
+  const capCfg = await loadMaxRecordConfig();
+  const cutSec = CAP_CUT_SECONDS(capCfg);
 
   const [mchByDate, stgByDate, actions] = await Promise.all([
+    
+    
     pool.query(
       `SELECT m.startdatetime::date AS d,
          round(sum(EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime)))/3600.0, 2) AS raw_hrs,
@@ -1512,18 +1732,21 @@ async function loadSapReconciliationData(fromDate, toDate) {
        FROM public.mch_transaction m
        WHERE m.startdatetime::date BETWEEN $1 AND $2 AND ${MCH_SAP_ELIGIBLE}
        GROUP BY 1 ORDER BY 1`,
-      [fromD, toD]
+      [fromD, toD],
     ),
-
+    
+    
+    
     pool.query(
       `SELECT st.bucket_start::date AS d, st.status, st.is_productive,
          round(sum(st.total_seconds)/3600.0, 2) AS hrs, count(*)::int AS n
        FROM public.sap_timesheet_staging st
        WHERE st.source_system = 'MCH_HOURS' AND st.bucket_start::date BETWEEN $1 AND $2
        GROUP BY 1, 2, 3`,
-      [fromD, toD]
+      [fromD, toD],
     ),
-
+    
+    
     pool.query(
       `WITH pend AS (
          SELECT src.staging_id,
@@ -1544,34 +1767,23 @@ async function loadSapReconciliationData(fromDate, toDate) {
             WHERE source_system='MCH_HOURS' AND status='FAILED' AND bucket_start::date BETWEEN $1 AND $2)::int AS failed_bundles,
          (SELECT count(*) FROM public.sap_timesheet_staging
             WHERE source_system='MCH_HOURS' AND status='SKIPPED' AND bucket_start::date BETWEEN $1 AND $2)::int AS skipped_bundles`,
-      [fromD, toD]
+      [fromD, toD],
     ),
   ]);
 
+  
   const byDate = new Map();
   const row = (d) => {
     const key = String(d);
     if (!byDate.has(key)) {
       byDate.set(key, {
-        date: key,
-        mch_clamped_hrs: 0,
-        mch_raw_hrs: 0,
-        cap_cut_hrs: 0,
-        overlap_hrs: 0,
-        rows_eligible: 0,
-        rows_stuck: 0,
-        staged_hrs: 0,
-        posted_hrs: 0,
-        pending_hrs: 0,
-        failed_hrs: 0,
-        skipped_hrs: 0,
-        posted_n: 0,
-        pending_n: 0,
-        failed_n: 0,
-        skipped_n: 0,
-
-        posted_order_hrs: 0,
-        posted_cc_hrs: 0,
+        date: key, mch_clamped_hrs: 0, mch_raw_hrs: 0, cap_cut_hrs: 0, overlap_hrs: 0,
+        rows_eligible: 0, rows_stuck: 0,
+        staged_hrs: 0, posted_hrs: 0, pending_hrs: 0, failed_hrs: 0, skipped_hrs: 0,
+        posted_n: 0, pending_n: 0, failed_n: 0, skipped_n: 0,
+        
+        
+        posted_order_hrs: 0, posted_cc_hrs: 0,
       });
     }
     return byDate.get(key);
@@ -1585,27 +1797,21 @@ async function loadSapReconciliationData(fromDate, toDate) {
     e.rows_eligible = num(r.rows_eligible);
     e.rows_stuck = num(r.rows_stuck);
   }
-  const STG_KEY = {
-    POSTED: ['posted_hrs', 'posted_n'],
-    PENDING: ['pending_hrs', 'pending_n'],
-    FAILED: ['failed_hrs', 'failed_n'],
-    SKIPPED: ['skipped_hrs', 'skipped_n'],
-  };
+  const STG_KEY = { POSTED: ["posted_hrs", "posted_n"], PENDING: ["pending_hrs", "pending_n"], FAILED: ["failed_hrs", "failed_n"], SKIPPED: ["skipped_hrs", "skipped_n"] };
   for (const r of stgByDate.rows) {
     const e = row(r.d);
     e.staged_hrs += num(r.hrs);
     const k = STG_KEY[r.status];
-    if (k) {
-      e[k[0]] += num(r.hrs);
-      e[k[1]] += num(r.n);
-    }
-    if (r.status === 'POSTED') {
+    if (k) { e[k[0]] += num(r.hrs); e[k[1]] += num(r.n); }
+    if (r.status === "POSTED") {
       if (r.is_productive) e.posted_order_hrs += num(r.hrs);
       else e.posted_cc_hrs += num(r.hrs);
     }
+    
   }
-  const by_date = [...byDate.values()].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const by_date = [...byDate.values()].sort((a, b) => (a.date < b.date ? 1 : -1)); 
 
+  
   const sum = (f) => by_date.reduce((s, r) => s + f(r), 0);
   const r2 = (n) => Math.round(n * 100) / 100;
   const funnel = {
@@ -1615,8 +1821,8 @@ async function loadSapReconciliationData(fromDate, toDate) {
     overlap_hrs: r2(sum((r) => r.overlap_hrs)),
     staged_hrs: r2(sum((r) => r.staged_hrs)),
     posted_hrs: r2(sum((r) => r.posted_hrs)),
-    posted_order_hrs: r2(sum((r) => r.posted_order_hrs)),
-    posted_cc_hrs: r2(sum((r) => r.posted_cc_hrs)),
+    posted_order_hrs: r2(sum((r) => r.posted_order_hrs)),  
+    posted_cc_hrs: r2(sum((r) => r.posted_cc_hrs)),        
     pending_hrs: r2(sum((r) => r.pending_hrs)),
     failed_hrs: r2(sum((r) => r.failed_hrs)),
     skipped_hrs: r2(sum((r) => r.skipped_hrs)),
@@ -1636,61 +1842,67 @@ async function loadSapReconciliationData(fromDate, toDate) {
   };
 }
 
+
+
+
+
 async function getSapReconciliation(req, res) {
   try {
-    const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : null;
-    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : null;
+    const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : null;
+    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "") ? req.query.to : null;
     const data = await loadSapReconciliationData(fromDate, toDate);
     res.json({ data, meta: meta() });
   } catch (err) {
-    console.error('sap-reconciliation error:', err);
+    console.error("sap-reconciliation error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
+
 async function exportSapReconciliation(req, res) {
   try {
-    const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : null;
-    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : null;
+    const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : null;
+    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "") ? req.query.to : null;
     const data = await loadSapReconciliationData(fromDate, toDate);
     const { funnel: f, by_date } = data;
-    const caps = await loadMaxRecordMinutes();
-    const cutSec = CAP_CUT_SECONDS(caps.va, caps.nnva, caps.nva);
-    const endCappedExpr = END_CAPPED_EXPR(caps.va, caps.nnva, caps.nva);
+    const capCfg = await loadMaxRecordConfig();
+    const cutSec = CAP_CUT_SECONDS(capCfg);
+    const endCappedExpr = END_CAPPED_EXPR(capCfg);
 
     const wb = new ExcelJS.Workbook();
     const fmt = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 100) / 100 : 0);
 
-    const sum = wb.addWorksheet('Summary');
+    const sum = wb.addWorksheet("Summary");
     sum.columns = [
-      { header: 'Metric', key: 'label', width: 32 },
-      { header: 'Hours', key: 'hrs', width: 12 },
+      { header: "Metric", key: "label", width: 32 },
+      { header: "Hours", key: "hrs", width: 12 },
     ];
     [
-      ['Machine hours (raw)', fmt(f.mch_raw_hrs)],
-      ['Machine hours (after clamp)', fmt(f.mch_clamped_hrs)],
-      ['Cut (max record duration)', fmt(f.cap_cut_hrs)],
-      ['Posted to SAP', fmt(f.posted_hrs)],
-      ['Posted (order)', fmt(f.posted_order_hrs)],
-      ['Posted (cost center)', fmt(f.posted_cc_hrs)],
-      ['Pending', fmt(f.pending_hrs)],
-      ['Failed', fmt(f.failed_hrs)],
-      ['Skipped', fmt(f.skipped_hrs)],
+      ["Machine hours (raw)", fmt(f.mch_raw_hrs)],
+      ["Machine hours (after clamp)", fmt(f.mch_clamped_hrs)],
+      ["Cut (max record duration)", fmt(f.cap_cut_hrs)],
+      ["Posted to SAP", fmt(f.posted_hrs)],
+      ["Posted (order)", fmt(f.posted_order_hrs)],
+      ["Posted (cost center)", fmt(f.posted_cc_hrs)],
+      ["Pending", fmt(f.pending_hrs)],
+      ["Failed", fmt(f.failed_hrs)],
+      ["Skipped", fmt(f.skipped_hrs)],
     ].forEach(([label, hrs]) => sum.addRow({ label, hrs }));
     sum.getRow(1).font = { bold: true };
-    sum.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFCAF0F8' } };
-    sum.getColumn(2).numFmt = '0.00';
+    sum.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFCAF0F8" } };
+    sum.getColumn(2).numFmt = "0.00";
 
-    const by = wb.addWorksheet('By Date');
+    const by = wb.addWorksheet("By Date");
     by.columns = [
-      { header: 'Date', key: 'date', width: 12 },
-      { header: 'Raw hrs', key: 'raw', width: 10 },
-      { header: 'Clamped hrs', key: 'clamped', width: 12 },
-      { header: 'Cut (max record)', key: 'cut', width: 16 },
-      { header: 'Posted', key: 'posted', width: 10 },
-      { header: 'Not posted', key: 'notposted', width: 12 },
-      { header: 'Rows', key: 'rows', width: 8 },
-      { header: 'Stuck', key: 'stuck', width: 8 },
+      { header: "Date", key: "date", width: 12 },
+      { header: "Raw hrs", key: "raw", width: 10 },
+      { header: "Clamped hrs", key: "clamped", width: 12 },
+      { header: "Cut (max record)", key: "cut", width: 16 },
+      { header: "Posted", key: "posted", width: 10 },
+      { header: "Not posted", key: "notposted", width: 12 },
+      { header: "Rows", key: "rows", width: 8 },
+      { header: "Stuck", key: "stuck", width: 8 },
     ];
     for (const r of by_date) {
       by.addRow({
@@ -1708,6 +1920,7 @@ async function exportSapReconciliation(req, res) {
     by.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFCAF0F8" } };
     by.views = [{ state: "frozen", ySplit: 1 }];
 
+    
     const bd = wb.addWorksheet("Bundles");
     bd.columns = [
       { header: "Date", key: "date", width: 12 },
@@ -1789,9 +2002,11 @@ async function exportSapReconciliation(req, res) {
     bd.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFCAF0F8" } };
     bd.views = [{ state: "frozen", ySplit: 1 }];
 
+    
     const rc = wb.addWorksheet("Records");
     rc.columns = [
       { header: "Date", key: "date", width: 12 },
+      { header: "Source", key: "source", width: 11 },
       { header: "Staging ID", key: "staging_id", width: 10 },
       { header: "PERNR", key: "pernr", width: 10 },
       { header: "Name", key: "name", width: 22 },
@@ -1813,37 +2028,15 @@ async function exportSapReconciliation(req, res) {
       { header: "Stuck", key: "stuck", width: 7 },
     ];
     const { rows: recRows } = await pool.query(
-      `SELECT
-         to_char(st.bucket_start AT TIME ZONE '${TZ}', 'YYYY-MM-DD') AS date,
-         st.id AS staging_id, m.proddataid AS source_row_id, m.sn_employee AS pernr, COALESCE(u.full_name, '') AS name,
-         m.machinename AS machine, m.status_activitytype AS activity,
-         m.status_description AS status_desc,
-         to_char(m.startdatetime, 'YYYY-MM-DD HH24:MI:SS') AS start,
-         to_char(m.enddatetime, 'YYYY-MM-DD HH24:MI:SS') AS end_orig,
-         to_char(${endCappedExpr}, 'YYYY-MM-DD HH24:MI:SS') AS end_capped,
-         COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime)))::bigint AS raw,
-         (${CLAMPED_SEG_SECONDS})::bigint AS clamped,
-         (${cutSec})::bigint AS capcut,
-         (${BREAK_CUT_SECONDS}) AS breakcut,
-         (${CLAMPED_SEG_SECONDS} - ${cutSec} - ${BREAK_CUT_SECONDS})::bigint AS recognized,
-         m.order_no, m.operation_no,
-         COALESCE(NULLIF(m.operation_short_text, ''), m.operation_description) AS operation_text,
-         m.confirmation_number AS confirmation, m.is_stuck AS stuck,
-         (ex2.source_row_id IS NOT NULL) AS excluded
-       FROM public.sap_staging_source src
-       JOIN public.sap_timesheet_staging st ON st.id = src.staging_id
-       JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
-       LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
-       LEFT JOIN public.sap_staging_exclusion ex2
-         ON ex2.source_system = 'MCH_HOURS' AND ex2.source_row_id = m.proddataid::text
-       WHERE src.source_system = 'MCH_HOURS'
-         AND st.bucket_start::date BETWEEN $1::date AND $2::date
-       ORDER BY st.bucket_start, st.id, m.startdatetime`,
+      `SELECT *
+       FROM (${buildRecordsSql(capCfg, { source: "all" })}) x
+       ORDER BY x.sort_day, x.staging_id, x.start`,
       [data.range.from, data.range.to],
     );
     for (const r of recRows) {
       rc.addRow({
         date: r.date,
+        source: r.source,
         staging_id: r.staging_id,
         pernr: r.pernr,
         name: r.name,
@@ -1871,26 +2064,29 @@ async function exportSapReconciliation(req, res) {
 
     const filename = `sap_reconciliation_${data.range.from}_to_${data.range.to}.xlsx`;
     res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     await wb.xlsx.write(res);
     return res.end();
   } catch (err) {
-    console.error('sap-reconciliation-export error:', err);
+    console.error("sap-reconciliation-export error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
+
+
 async function getSapReconciliationDay(req, res) {
   try {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '')) {
-      return res.status(400).json({ error: 'date (YYYY-MM-DD) wajib' });
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(req.query.date || "")) {
+      return res.status(400).json({ error: "date (YYYY-MM-DD) wajib" });
     }
     const day = req.query.date;
-    const caps = await loadMaxRecordMinutes();
-    const cutSec = CAP_CUT_SECONDS(caps.va, caps.nnva, caps.nva);
+    const capCfg = await loadMaxRecordConfig();
+    const cutSec = CAP_CUT_SECONDS(capCfg);
     const { rows } = await pool.query(
       `SELECT
          st.id, st.pernr, st.aufnr, st.vornr, st.lstar, st.zbarcodeid, st.is_productive,
@@ -1928,7 +2124,7 @@ async function getSapReconciliationDay(req, res) {
          ON u.snssb = COALESCE(NULLIF(st.pernr_origin, ''), st.pernr)
        WHERE st.source_system = 'MCH_HOURS' AND st.bucket_start::date = $1::date
        ORDER BY (st.status='POSTED') DESC, st.is_productive DESC, st.total_seconds DESC`,
-      [day]
+      [day],
     );
     res.json({ data: { date: day, bundles: rows }, meta: meta() });
   } catch (err) {
@@ -1936,6 +2132,9 @@ async function getSapReconciliationDay(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+
+
 
 async function getSapReconciliationRecords(req, res) {
   try {
@@ -1945,73 +2144,40 @@ async function getSapReconciliationRecords(req, res) {
     const pageSize = Math.min(Math.max(parseInt(req.query.pageSize, 10) || 100, 10), 500);
     const q = String(req.query.q || "").trim();
 
-    const caps = await loadMaxRecordMinutes();
-    const cutSec = CAP_CUT_SECONDS(caps.va, caps.nnva, caps.nva);
-    const endCappedExpr = END_CAPPED_EXPR(caps.va, caps.nnva, caps.nva);
+    const capCfg = await loadMaxRecordConfig();
+    const sourceParam = String(req.query.source || "all").toLowerCase();
+    const source = ["mch", "timesheet", "all"].includes(sourceParam) ? sourceParam : "all";
 
-    const search = q
-      ? "AND (m.sn_employee ILIKE $3 OR u.full_name ILIKE $3 OR m.machinename ILIKE $3 OR m.order_no ILIKE $3)"
-      : "";
     const params = [fromDate, toDate];
     if (q) params.push(`%${q}%`);
+    const inner = buildRecordsSql(capCfg, { source, search: Boolean(q) });
+    const limitIdx = params.length + 1;
 
-    const { rows: countRows } = await pool.query(
-      `SELECT count(*)::int AS total
-       FROM public.sap_staging_source src
-       JOIN public.sap_timesheet_staging st ON st.id = src.staging_id
-       JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
-       LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
-       WHERE src.source_system = 'MCH_HOURS'
-         AND st.bucket_start::date BETWEEN $1::date AND $2::date ${search}`,
-      params,
-    );
-    const total = countRows[0]?.total || 0;
-
+    
     const { rows } = await pool.query(
-      `SELECT
-         to_char(st.bucket_start AT TIME ZONE '${TZ}', 'YYYY-MM-DD') AS date,
-         st.id AS staging_id, st.status AS bundle_status, st.is_productive AS bundle_productive,
-         m.proddataid AS source_row_id,
-         m.sn_employee AS pernr, COALESCE(u.full_name, '') AS name,
-         m.machinename AS machine, m.status_activitytype AS activity,
-         m.status_description AS status_desc,
-         to_char(m.startdatetime, 'YYYY-MM-DD HH24:MI:SS') AS start,
-         to_char(m.enddatetime, 'YYYY-MM-DD HH24:MI:SS') AS end_orig,
-         to_char(${endCappedExpr}, 'YYYY-MM-DD HH24:MI:SS') AS end_capped,
-         COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime)))::bigint AS raw,
-         (${CLAMPED_SEG_SECONDS})::bigint AS clamped,
-         (${cutSec})::bigint AS capcut,
-         (${BREAK_CUT_SECONDS}) AS breakcut,
-         (${CLAMPED_SEG_SECONDS} - ${cutSec} - ${BREAK_CUT_SECONDS})::bigint AS recognized,
-         m.order_no, m.operation_no,
-         COALESCE(NULLIF(m.operation_short_text, ''), m.operation_description) AS operation_text,
-         m.confirmation_number AS confirmation, m.is_stuck AS stuck,
-         (ex2.source_row_id IS NOT NULL) AS excluded
-       FROM public.sap_staging_source src
-       JOIN public.sap_timesheet_staging st ON st.id = src.staging_id
-       JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
-       LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
-       LEFT JOIN public.sap_staging_exclusion ex2
-         ON ex2.source_system = 'MCH_HOURS' AND ex2.source_row_id = m.proddataid::text
-       WHERE src.source_system = 'MCH_HOURS'
-         AND st.bucket_start::date BETWEEN $1::date AND $2::date ${search}
-       ORDER BY st.bucket_start DESC, st.id DESC, m.startdatetime
-       LIMIT $${q ? 4 : 3} OFFSET $${q ? 5 : 4}`,
+      `SELECT x.*, count(*) OVER ()::int AS total_count
+       FROM (${inner}) x
+       ORDER BY x.sort_day DESC, x.staging_id DESC, x.start
+       LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
       [...params, pageSize, (page - 1) * pageSize],
     );
-    res.json({ data: { records: rows, total, page, pageSize }, meta: meta() });
+    const total = rows[0]?.total_count || 0;
+    for (const r of rows) delete r.total_count;
+    res.json({ data: { records: rows, total, page, pageSize, source }, meta: meta() });
   } catch (err) {
     console.error("sap-reconciliation-records error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
+
 async function excludeSapRecord(req, res) {
   try {
-    const sourceRowId = String(req.body?.source_row_id || '').trim();
-    if (!sourceRowId) return res.status(400).json({ error: 'source_row_id wajib' });
-    const note = String(req.body?.note || '').trim() || null;
-    const excludedBy = req.header('x-user-id') || null;
+    const sourceRowId = String(req.body?.source_row_id || "").trim();
+    if (!sourceRowId) return res.status(400).json({ error: "source_row_id wajib" });
+    const note = String(req.body?.note || "").trim() || null;
+    const excludedBy = req.header("x-user-id") || null;
 
     const { rows } = await pool.query(
       `SELECT to_char(st.bucket_start, 'YYYY-MM-DD') AS d FROM public.sap_staging_source ss
@@ -2039,20 +2205,21 @@ async function excludeSapRecord(req, res) {
         );
         recalc = r.rows[0];
       } catch (err) {
-        if (err.code !== '23505') throw err;
+        if (err.code !== "23505") throw err;
       }
     }
     res.json({ data: { excluded: true, source_row_id: sourceRowId, date, recalc }, meta: meta() });
   } catch (err) {
-    console.error('excludeSapRecord error:', err);
+    console.error("excludeSapRecord error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
+
 async function unexcludeSapRecord(req, res) {
   try {
-    const sourceRowId = String(req.query.source_row_id || '').trim();
-    if (!sourceRowId) return res.status(400).json({ error: 'source_row_id wajib' });
+    const sourceRowId = String(req.query.source_row_id || "").trim();
+    if (!sourceRowId) return res.status(400).json({ error: "source_row_id wajib" });
 
     const { rows } = await pool.query(
       `SELECT to_char(startdatetime, 'YYYY-MM-DD') AS d FROM public.mch_transaction WHERE proddataid = $1::int LIMIT 1`,
@@ -2071,19 +2238,20 @@ async function unexcludeSapRecord(req, res) {
         const r = await pool.query(
           `INSERT INTO public.sap_ops_request (action, params, requested_by)
            VALUES ('recalc_date', $1::jsonb, $2) RETURNING id, status`,
-          [JSON.stringify({ date }), req.header('x-user-id') || null],
+          [JSON.stringify({ date }), req.header("x-user-id") || null],
         );
         recalc = r.rows[0];
       } catch (err) {
-        if (err.code !== '23505') throw err;
+        if (err.code !== "23505") throw err;
       }
     }
     res.json({ data: { excluded: false, source_row_id: sourceRowId, date, recalc }, meta: meta() });
   } catch (err) {
-    console.error('unexcludeSapRecord error:', err);
+    console.error("unexcludeSapRecord error:", err);
     res.status(500).json({ error: err.message });
   }
 }
+
 
 async function listSapExclusions(req, res) {
   try {
@@ -2101,19 +2269,21 @@ async function listSapExclusions(req, res) {
     );
     res.json({ data: { exclusions: rows }, meta: meta() });
   } catch (err) {
-    console.error('listSapExclusions error:', err);
+    console.error("listSapExclusions error:", err);
     res.status(500).json({ error: err.message });
   }
 }
+
+
 
 async function getSapReconciliationRecord(req, res) {
   try {
     const stagingId = parseInt(req.query.staging_id, 10);
     if (!Number.isInteger(stagingId)) {
-      return res.status(400).json({ error: 'staging_id wajib' });
+      return res.status(400).json({ error: "staging_id wajib" });
     }
-    const caps = await loadMaxRecordMinutes();
-    const cutSec = CAP_CUT_SECONDS(caps.va, caps.nnva, caps.nva);
+    const capCfg = await loadMaxRecordConfig();
+    const cutSec = CAP_CUT_SECONDS(capCfg);
     const [head, rows] = await Promise.all([
       pool.query(
         `SELECT id, status, aufnr, vornr, lstar, pernr, zbarcodeid, is_productive,
@@ -2121,7 +2291,7 @@ async function getSapReconciliationRecord(req, res) {
            to_char(bucket_start,'YYYY-MM-DD') AS day,
            COALESCE(sap_response_text, sap_error, '') AS sap_response
          FROM public.sap_timesheet_staging WHERE id = $1`,
-        [stagingId]
+        [stagingId],
       ),
       pool.query(
         `SELECT m.proddataid, m.machineid, m.status_description,
@@ -2136,17 +2306,19 @@ async function getSapReconciliationRecord(req, res) {
          JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
          WHERE src.staging_id = $1
          ORDER BY m.startdatetime`,
-        [stagingId]
+        [stagingId],
       ),
     ]);
     res.json({ data: { bundle: head.rows[0] || null, records: rows.rows }, meta: meta() });
   } catch (err) {
-    console.error('sap-reconciliation-record error:', err);
+    console.error("sap-reconciliation-record error:", err);
     res.status(500).json({ error: err.message });
   }
 }
 
 module.exports = {
+  loadMaxRecordConfig,
+  buildRecordsSql,
   getKpi,
   getSapReconciliation,
   exportSapReconciliation,

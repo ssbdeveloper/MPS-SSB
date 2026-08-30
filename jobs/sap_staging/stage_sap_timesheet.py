@@ -121,41 +121,52 @@ def fetch_timesheet_rows(tsnumbers: list[int], from_date: str | None, to_date: s
 
 
 def fetch_machine_hour_rows(from_ts: datetime, to_ts: datetime, mode: str = "normal") -> list[dict]:
-    """mode='normal': bundel biasa untuk kunci yang BELUM ter-post (segmen ter-post
-    dikecualikan). mode='correction': bundel KOREKSI untuk segmen yang datang setelah
-    kunci-harinya ter-post — hanya segmen yang BELUM ter-bundle sama sekali, kunci diberi
-    penanda 'KOREKSI' agar tak menabrak bundel POSTED. Aditif di SAP -> menambah jam."""
+    
     werks = plant_code()
     if not werks:
         raise ValueError("PLANT_SSB is required for machine-hour staging")
 
+    
     rules = {}
     try:
         with connect_source() as conn:
             rules = load_sap_rules(conn)
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover — fallback aman ke default
         log.warning("fetch_machine_hour_rows: load_sap_rules gagal, pakai default (%s)", exc)
         rules = load_sap_rules_default()
     break_windows_json = json.dumps(rules.get("break_windows", []))
     max_record = rules.get("max_record_minutes") or {}
-    max_va = int(max_record.get("va", 90))
-    max_nnva = int(max_record.get("nnva", 90))
-    max_nva = int(max_record.get("nva", 90))
+    
+    max_record_mch_json = json.dumps(max_record.get("mch") or {})
+    
+    
+    fallback = rules.get("max_record_fallback") or {}
+    fb_va = fallback.get("va")
+    fb_nnva = fallback.get("nnva")
+    fb_nva = fallback.get("nva")
 
     sql = """
-    WITH source_rows AS (
+    WITH cap_cfg AS (
+      SELECT %s::jsonb AS mch
+    ),
+    source_rows AS (
       SELECT
         proddataid,
         startdatetime,
-        -- CAP PER RECORD per KATEGORI (rules config, 2026-08-25): 1 record
-        -- mch_transaction maksimal N menit sesuai kategorinya — M1 = VA,
-        -- M2 (termasuk idle pendek yang dipromosikan ke M2 di bawah) = NNVA,
-        -- selain itu (activity type numerik) = NVA. Lebih dari itu ekor record
-        -- DIPOTONG di start + N menit, sisanya tidak dianggap.
+        -- CAP PER RECORD per JENIS AKTIVITAS (rules config, 2026-08-30): 1 record
+        -- mch_transaction maksimal N menit sesuai statusid-nya (cc.mch, key =
+        -- statusid). Nilai json null = NO LIMIT -> cap NULL -> LEAST mengabaikan
+        -- NULL sehingga durasi asli lolos utuh. statusid yang TIDAK ada di map
+        -- memakai fallback kategori dari config lama (M1=VA, M2/idle-promotable=
+        -- NNVA, selain itu NVA); kalau fallback juga tidak ada -> tanpa cap.
+        -- Lebih dari cap: ekor record DIPOTONG di start + N menit.
         LEAST(
           COALESCE(end_effective, enddatetime),
           startdatetime + (
             CASE
+              WHEN jsonb_typeof(cc.mch -> statusid::text) = 'null' THEN NULL
+              WHEN (cc.mch ->> statusid::text) ~ '^[0-9]+$'
+                THEN (cc.mch ->> statusid::text)::int
               WHEN status_activitytype = 'M1' THEN %s::int
               WHEN status_activitytype = 'M2'
                 OR (statusid = 2 AND previoustatusid = 1
@@ -214,6 +225,7 @@ def fetch_machine_hour_rows(from_ts: datetime, to_ts: datetime, mode: str = "nor
           ELSE ''
         END AS zbarcode_src
       FROM mch_transaction
+      CROSS JOIN cap_cfg cc
       LEFT JOIN LATERAL (
         SELECT employee_category
         FROM usernfc u
@@ -495,6 +507,12 @@ def fetch_machine_hour_rows(from_ts: datetime, to_ts: datetime, mode: str = "nor
     ORDER BY f.bucket_start, f.arbpl, f.aufnr, f.vornr, f.zconf_type, f.lstar, f.zbarcodeid
     """
 
+    
+    
+    
+    
+    
+    
     if mode == "correction":
         seg_filter = ("AND NOT EXISTS (SELECT 1 FROM public.sap_staging_source ss "
                       "WHERE ss.source_system = 'MCH_HOURS' AND ss.source_row_id = mch_transaction.proddataid::text)")
@@ -502,7 +520,7 @@ def fetch_machine_hour_rows(from_ts: datetime, to_ts: datetime, mode: str = "nor
         is_correction_expr = "true"
         posted_key_filter = ("EXISTS (SELECT 1 FROM public.sap_timesheet_staging p "
                              "WHERE p.bucket_start = f.bucket_start AND p.status = 'POSTED')")
-    else:
+    else:  
         seg_filter = ("AND NOT EXISTS (SELECT 1 FROM public.sap_staging_source ss "
                       "WHERE ss.source_system = 'MCH_HOURS' AND ss.source_row_id = mch_transaction.proddataid::text "
                       "AND ss.posted_at IS NOT NULL)")
@@ -521,7 +539,7 @@ def fetch_machine_hour_rows(from_ts: datetime, to_ts: datetime, mode: str = "nor
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
                 sql,
-                (max_va, max_nnva, max_nva, to_ts, from_ts, break_windows_json,
+                (max_record_mch_json, fb_va, fb_nnva, fb_nva, to_ts, from_ts, break_windows_json,
                  from_ts, to_ts, from_ts, to_ts, werks, werks),
             )
             return [dict(row) for row in cur.fetchall()]
