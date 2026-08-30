@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { toast } from 'sonner';
 import {
   AlertCircle, AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, ChevronRight,
-  Clock, Cpu, Download, Factory, House, Info, Layers, Loader2, RefreshCw, Send, Trash2, X, XCircle,
+  Clock, Cpu, Download, Factory, Info, Layers, Loader2, RefreshCw, Send, Trash2, X, XCircle,
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -57,13 +57,13 @@ function dayLabel(iso) {
     full: d.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }),
   };
 }
-
+// Confirmation target: order+op (productive) or non-order activity.
 function targetText(b) {
   if (b.is_productive) return `Order ${b.aufnr || '—'} · Op ${b.vornr || '—'}`;
   return `Activity ${b.lstar || '—'}`;
 }
 
-
+// Kolom tabel Records: label jelas tanpa singkatan.
 const RECORD_COLS = [
   { en: 'Date' },
   { en: 'Source' },
@@ -99,9 +99,9 @@ const shortDate = (iso) => {
   return `${Number(d)} ${MON[Number(m) - 1]} ${y.slice(2)}`;
 };
 
-
-
-
+// Satu baris tabel Records — di-memo supaya re-render panel (polling ops, loading, dll)
+// tidak menggambar ulang semua baris. content-visibility membuat baris di luar layar
+// tidak di-paint browser (kunci performa saat pageSize besar).
 const RecordRow = React.memo(function RecordRow({ r, excludeBusy, onExclude }) {
   const hitBreak = Number(r.breakcut) > 0;
   const hitCap = Number(r.capcut) > 0;
@@ -172,7 +172,7 @@ function StatusBadge({ status, size = 'sm' }) {
   );
 }
 
-
+// ── Summary card (one step of the flow) ──────────────────────────────────────
 function StepCard({ icon, label, hours, tone, children }) {
   const Icon = icon;
   const tones = {
@@ -193,7 +193,7 @@ function StepCard({ icon, label, hours, tone, children }) {
   );
 }
 
-
+// Segmented filter: All / Posted / Not posted.
 function FilterToggle({ value, onChange }) {
   const opts = [['all', 'All'], ['posted', 'Posted'], ['belum', 'Not posted']];
   return (
@@ -213,7 +213,7 @@ function FilterToggle({ value, onChange }) {
   );
 }
 
-
+// Queue job status (stage_catchup) — small chip.
 function OpsStatus({ ops }) {
   const map = {
     QUEUED:  { label: 'Queued',  color: '#d97706', bg: '#fffbeb', border: '#fde68a' },
@@ -234,8 +234,8 @@ function OpsStatus({ ops }) {
   );
 }
 
-
-
+// Group a day's confirmations per operator — so each person's activities stay together
+// instead of scattering among other people's rows.
 function groupByOperator(bundles) {
   const m = new Map();
   for (const b of bundles || []) {
@@ -251,8 +251,8 @@ function groupByOperator(bundles) {
   }
   const groups = [...m.values()];
   for (const g of groups) {
-    
-    
+    // Within one operator: same order+op adjacent (productive/VA first, then Setting/etc);
+    // non-order rows (pure non-productive) last.
     g.items.sort((a, b) => {
       const ax = a.aufnr || '', bx = b.aufnr || '';
       if (ax && !bx) return -1;
@@ -273,33 +273,34 @@ function ReconciliationPanel() {
   const [to, setTo] = useState('');
   const [exporting, setExporting] = useState(false);
 
-  
-  const [day, setDay] = useState(null);       
+  // Drill: selected date (level-2) & selected confirmation (level-3).
+  const [day, setDay] = useState(null);       // { date }
   const [dayData, setDayData] = useState(null);
   const [dayLoading, setDayLoading] = useState(false);
-  const [rec, setRec] = useState(null);        
+  const [rec, setRec] = useState(null);        // { staging_id, meta }
   const [recData, setRecData] = useState(null);
   const [recLoading, setRecLoading] = useState(false);
-  const [openOps, setOpenOps] = useState(() => new Set()); 
-  const [dayFilter, setDayFilter] = useState('all');       
-  const [ops, setOps] = useState(null);                    
+  const [openOps, setOpenOps] = useState(() => new Set()); // expanded operator groups (default: all collapsed)
+  const [dayFilter, setDayFilter] = useState('all');       // all | posted | belum
+  const [ops, setOps] = useState(null);                    // latest stage_catchup job status
   const [opsBusy, setOpsBusy] = useState(false);
-  const [view, setView] = useState('records');             
-  const [recs, setRecs] = useState(null);                  
+  const [view, setView] = useState('records');             // records | overview
+  const [recs, setRecs] = useState(null);                  // { records, total, page, pageSize }
   const [recsLoading, setRecsLoading] = useState(false);
   const [recsError, setRecsError] = useState(null);
   const [recsPageSize, setRecsPageSize] = useState(25);
   const [recsQ, setRecsQ] = useState('');
-  const [recsSource, setRecsSource] = useState('all'); 
+  const [recsSource, setRecsSource] = useState('all'); // all | mch | timesheet
   const [exclusions, setExclusions] = useState([]);
+  const [exQ, setExQ] = useState('');
   const [confirmExclude, setConfirmExclude] = useState(null);
   const [excludeNote, setExcludeNote] = useState('');
   const [excludeBusy, setExcludeBusy] = useState(false);
   const [postDayBusy, setPostDayBusy] = useState(false);
   const opsTimer = useRef(null);
-  const panelRef = useRef(null);          
-  const scrollParentRef = useRef(null);   
-  const savedScroll = useRef(0);          
+  const panelRef = useRef(null);          // root panel (to find scroll parent)
+  const scrollParentRef = useRef(null);   // container scrolled while drilling
+  const savedScroll = useRef(0);          // scroll position before entering detail
 
   const load = useCallback(async (signal) => {
     setLoading(true); setError(null);
@@ -324,7 +325,7 @@ function ReconciliationPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  
+  // Export rekonsiliasi rentang terpilih ke Excel (.xlsx dari backend).
   const handleExport = useCallback(async () => {
     if (!from || !to) { toast.warning('Pick From and To dates first.'); return; }
     setExporting(true);
@@ -350,7 +351,7 @@ function ReconciliationPanel() {
     }
   }, [from, to]);
 
-  
+  // Staging job status: poll while one is running, stop when finished.
   const pollOps = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/dashboard/sap-ops/requests`);
@@ -360,7 +361,7 @@ function ReconciliationPanel() {
       if (latest && (latest.status === 'QUEUED' || latest.status === 'RUNNING')) {
         opsTimer.current = setTimeout(pollOps, 4000);
       }
-    } catch {  }
+    } catch { /* ignore — user can resend / check manually */ }
   }, []);
 
   useEffect(() => {
@@ -368,8 +369,8 @@ function ReconciliationPanel() {
     return () => { if (opsTimer.current) clearTimeout(opsTimer.current); };
   }, [pollOps]);
 
-  
-  
+  // Queue eligible-but-unstaged records (Python worker does the staging; correction mode for
+  // already-closed days). Node only enqueues the request — it never runs bundling.
   const loadRecords = useCallback(async (page = 1) => {
     setRecsLoading(true);
     setRecsError(null);
@@ -394,15 +395,23 @@ function ReconciliationPanel() {
 
   const loadExclusions = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/dashboard/sap-staging-exclusion`);
+      const params = new URLSearchParams();
+      if (from) params.set('from', from);
+      if (to) params.set('to', to);
+      if (exQ.trim()) params.set('q', exQ.trim());
+      const res = await fetch(`${API_BASE}/dashboard/sap-staging-exclusion?${params.toString()}`);
       const json = await res.json();
       if (res.ok) setExclusions(json.data?.exclusions || []);
     } catch (err) {
       console.error('loadExclusions error', err);
     }
-  }, []);
+  }, [from, to, exQ]);
 
-  useEffect(() => { loadExclusions(); }, [loadExclusions]);
+  // Reload exclusions saat rentang tanggal / search berubah (search di-debounce).
+  useEffect(() => {
+    const t = setTimeout(loadExclusions, exQ ? 350 : 0);
+    return () => clearTimeout(t);
+  }, [loadExclusions, exQ]);
 
   const enqueueOps = useCallback(async (action, params, label) => {
     try {
@@ -480,7 +489,7 @@ function ReconciliationPanel() {
         const p = await res.json().catch(() => ({}));
         throw new Error(p.error || 'Failed to send request');
       }
-      
+      // 202 (queued) or 409 (already running) → start/continue polling.
       if (opsTimer.current) clearTimeout(opsTimer.current);
       pollOps();
     } catch (err) {
@@ -490,9 +499,9 @@ function ReconciliationPanel() {
     }
   }, [pollOps]);
 
-  
+  // Level-2: confirmations for one date.
   const openDay = useCallback(async (date) => {
-    savedScroll.current = 0; 
+    savedScroll.current = 0; // new date → start at top
     setDay({ date }); setRec(null); setRecData(null); setDayData(null); setOpenOps(new Set()); setDayFilter('all'); setDayLoading(true);
     try {
       const res = await fetch(`${API_BASE}/dashboard/sap-reconciliation-day?date=${date}`);
@@ -503,9 +512,9 @@ function ReconciliationPanel() {
     finally { setDayLoading(false); }
   }, []);
 
-  
+  // Level-3: machine records behind one confirmation.
   const openRecord = useCallback(async (bundle) => {
-    
+    // Remember current scroll so we can restore it on "Back".
     const sp = getScrollParent(panelRef.current);
     scrollParentRef.current = sp;
     savedScroll.current = sp ? sp.scrollTop : (typeof window !== 'undefined' ? window.scrollY : 0);
@@ -519,7 +528,7 @@ function ReconciliationPanel() {
     finally { setRecLoading(false); }
   }, []);
 
-  
+  // Expand/collapse an operator group (accordion).
   const toggleOp = useCallback((key) => {
     setOpenOps((prev) => {
       const next = new Set(prev);
@@ -528,13 +537,13 @@ function ReconciliationPanel() {
     });
   }, []);
 
-  
+  // Stable: dipakai RecordRow (memo) supaya re-render panel tidak mengganti prop.
   const onExclude = useCallback((r) => {
     setConfirmExclude(r);
     setExcludeNote('');
   }, []);
 
-  
+  // When returning from detail (rec→null) to the day list, restore the last scroll position.
   useLayoutEffect(() => {
     if (!rec && day) {
       const sp = scrollParentRef.current;
@@ -543,7 +552,7 @@ function ReconciliationPanel() {
     }
   }, [rec, day]);
 
-  
+  // Selected date's confirmations: filter (Posted / Not posted) then group per operator.
   const dayFiltered = (dayData?.bundles || []).filter((b) =>
     dayFilter === 'all' ? true : dayFilter === 'posted' ? b.status === 'POSTED' : b.status !== 'POSTED');
   const dayGroups = groupByOperator(dayFiltered);
@@ -632,15 +641,22 @@ function ReconciliationPanel() {
     </section>
   );
 
-  
+  // Tab terpisah: daftar record yang di-exclude (tidak ikut dibundle/dikirim).
+  // Rentang tanggal (from/to) + search dikirim ke backend sehingga ikut terfilter.
   const renderExcluded = () => (
     <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2.5">
         <h3 className="text-xs font-bold uppercase tracking-wide text-slate-600">Excluded records</h3>
         <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-bold text-red-700">{exclusions.length}</span>
+        <input
+          value={exQ}
+          onChange={(e) => setExQ(e.target.value)}
+          placeholder="Search pernr / name / machine / activity…"
+          className="ml-auto w-56 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-800 placeholder:text-slate-400 focus:border-[#0096c7] focus:outline-none focus:ring-2 focus:ring-[#00b4d8]"
+        />
       </div>
       {exclusions.length === 0 ? (
-        <p className="px-4 py-10 text-center text-sm text-slate-400">No excluded records.</p>
+        <p className="px-4 py-10 text-center text-sm text-slate-400">No excluded records{exQ ? ' matching the search' : ''}.</p>
       ) : (
         <ul className="max-h-[62vh] divide-y divide-slate-100 overflow-y-auto">
           {exclusions.map((ex) => (
@@ -649,9 +665,10 @@ function ReconciliationPanel() {
                 <span className="font-mono font-bold text-slate-700">{ex.pernr}</span>{' '}
                 <span className="font-semibold text-slate-600">{ex.name}</span>
                 <span className="text-slate-400"> · {ex.machinename} · {ex.activity} · {ex.source_row_id}</span>
+                {ex.record_date && <span className="text-slate-400"> · {shortDate(ex.record_date)}</span>}
                 {ex.note && <span className="italic text-slate-500"> — {ex.note}</span>}
               </span>
-              <span className="text-[10px] text-slate-400">{ex.excluded_at ? String(ex.excluded_at).slice(0, 16) : ''}</span>
+              <span className="text-[10px] text-slate-400">excluded {ex.excluded_at ? String(ex.excluded_at).slice(0, 16) : ''}</span>
               <button
                 type="button"
                 disabled={excludeBusy}
@@ -668,15 +685,16 @@ function ReconciliationPanel() {
     </section>
   );
 
-  const crumb = (
+  // Breadcrumb hanya tampil saat drill (day/rec) — di level summary tidak ada agar rapat.
+  const crumb = !day && !rec ? null : (
     <nav className="flex flex-wrap items-center gap-1 text-xs">
       <button
         type="button"
         onClick={() => { setDay(null); setRec(null); }}
         title="Back to summary"
-        className={`flex h-7 w-7 items-center justify-center rounded-lg transition ${day ? 'text-[#0077b6] hover:bg-slate-100' : 'text-slate-500'}`}
+        className="flex h-6 items-center gap-1 rounded-lg px-2 font-bold text-[#0077b6] transition hover:bg-slate-100"
       >
-        <House size={14} />
+        <ArrowLeft size={13} /> All dates
       </button>
       {day && (
         <>
@@ -699,33 +717,6 @@ function ReconciliationPanel() {
 
   return (
     <div ref={panelRef} className="mx-auto flex w-full max-w-full flex-col gap-3">
-      {}
-      <div className="flex flex-wrap items-end justify-end gap-3">
-        <form onSubmit={(e) => { e.preventDefault(); setDay(null); setRec(null); load(); }} className="flex items-end gap-2">
-          <button
-            type="button"
-            onClick={handleExport}
-            disabled={exporting || !from || !to}
-            title="Export reconciliation to Excel"
-            className="flex min-h-[38px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 transition-all hover:bg-slate-50 active:scale-95 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00b4d8]"
-          >
-            {exporting ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />} Export
-          </button>
-          <label className="flex flex-col text-[11px] font-semibold text-slate-500">From
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-              className="mt-0.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 focus:border-[#0096c7] focus:outline-none focus:ring-2 focus:ring-[#00b4d8]" />
-          </label>
-          <label className="flex flex-col text-[11px] font-semibold text-slate-500">To
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-              className="mt-0.5 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 focus:border-[#0096c7] focus:outline-none focus:ring-2 focus:ring-[#00b4d8]" />
-          </label>
-          <button type="submit" disabled={loading}
-            className="flex min-h-[38px] items-center gap-1.5 rounded-lg bg-[#0077b6] px-3 text-xs font-semibold text-white transition-all hover:bg-[#023e8a] active:scale-95 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00b4d8]">
-            {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />} Apply
-          </button>
-        </form>
-      </div>
-
       {error && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
           <span className="flex items-center gap-2 text-sm font-semibold text-red-700"><AlertCircle size={16} /> {error}</span>
@@ -739,25 +730,53 @@ function ReconciliationPanel() {
         <>
           {crumb}
 
-          {}
+          {/* ══ LEVEL 1: Summary + date list ══ */}
           {!day && (
             <>
-              {}
-              <div className="inline-flex rounded-xl border border-slate-300 bg-slate-100 p-1">
-                {[
-                  { code: 'records', label: 'Records' },
-                  { code: 'overview', label: 'Overview' },
-                  { code: 'excluded', label: 'Excluded' },
-                ].map((t) => (
+              {/* Tab bar + date range filter — satu baris agar hemat tempat */}
+              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-300 bg-slate-100 p-1.5">
+                <div className="inline-flex rounded-lg bg-slate-200/60 p-0.5">
+                  {[
+                    { code: 'records', label: 'Records' },
+                    { code: 'overview', label: 'Overview' },
+                    { code: 'excluded', label: 'Excluded' },
+                  ].map((t) => (
+                    <button
+                      key={t.code}
+                      type="button"
+                      onClick={() => setView(t.code)}
+                      className={`rounded-lg px-4 py-1.5 text-xs font-bold transition-all active:scale-95 ${view === t.code ? 'bg-white text-slate-900 shadow' : 'text-slate-500 hover:bg-white/60'}`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <form
+                  onSubmit={(e) => { e.preventDefault(); setDay(null); setRec(null); load(); }}
+                  className="ml-auto flex flex-wrap items-center gap-2"
+                >
                   <button
-                    key={t.code}
                     type="button"
-                    onClick={() => setView(t.code)}
-                    className={`rounded-lg px-4 py-1.5 text-xs font-bold transition-all active:scale-95 ${view === t.code ? 'bg-white text-slate-900 shadow' : 'text-slate-500 hover:bg-white/60'}`}
+                    onClick={handleExport}
+                    disabled={exporting || !from || !to}
+                    title="Export reconciliation to Excel"
+                    className="flex h-[30px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 text-[11px] font-semibold text-slate-700 transition-all hover:bg-slate-50 active:scale-95 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00b4d8]"
                   >
-                    {t.label}
+                    {exporting ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />} Export
                   </button>
-                ))}
+                  <label className="flex items-center gap-1 text-[11px] font-bold text-slate-500">From
+                    <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+                      className="h-[30px] rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-800 focus:border-[#0096c7] focus:outline-none focus:ring-2 focus:ring-[#00b4d8]" />
+                  </label>
+                  <label className="flex items-center gap-1 text-[11px] font-bold text-slate-500">To
+                    <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+                      className="h-[30px] rounded-lg border border-slate-300 bg-white px-2 text-xs text-slate-800 focus:border-[#0096c7] focus:outline-none focus:ring-2 focus:ring-[#00b4d8]" />
+                  </label>
+                  <button type="submit" disabled={loading}
+                    className="flex h-[30px] items-center gap-1.5 rounded-lg bg-[#0077b6] px-2.5 text-[11px] font-semibold text-white transition-all hover:bg-[#023e8a] active:scale-95 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00b4d8]">
+                    {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />} Apply
+                  </button>
+                </form>
               </div>
 
               {view === 'records' && renderRecords()}
@@ -767,7 +786,7 @@ function ReconciliationPanel() {
 
           {!day && view === 'overview' && (
             <>
-              {}
+              {/* 3-step flow */}
               <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
                 <StepCard icon={Factory} label="Machine hours" hours={f.mch_clamped_hrs} tone="blue">
                   {f.cap_cut_hrs > 0.01 && <>cut {fmtDur(f.cap_cut_hrs)} by max record rule</>}
@@ -782,7 +801,7 @@ function ReconciliationPanel() {
                 </StepCard>
               </div>
 
-              {}
+              {/* Warnings (only when relevant) */}
               {(failed > 0 || stuckPending > 0) && (
                 <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
                   <AlertTriangle size={16} className="mt-0.5 flex-shrink-0 text-amber-600" />
@@ -795,7 +814,7 @@ function ReconciliationPanel() {
                 </div>
               )}
 
-              {}
+              {/* Action: stage records that were missed (eligible but not yet bundled) */}
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
                 <div className="min-w-0">
                   <div className="text-xs font-bold text-slate-700">Records missed staging?</div>
@@ -816,7 +835,7 @@ function ReconciliationPanel() {
                 </div>
               </div>
 
-              {}
+              {/* Date list — drill entry point */}
               <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
                 <div className="border-b border-slate-100 px-4 py-2.5">
                   <h3 className="text-xs font-bold uppercase tracking-wide text-slate-600">By date · click a row</h3>
@@ -873,7 +892,7 @@ function ReconciliationPanel() {
             </>
           )}
 
-          {}
+          {/* ══ LEVEL 2: Confirmations within one date ══ */}
           {day && !rec && (
             <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-2.5">
@@ -919,7 +938,7 @@ function ReconciliationPanel() {
                       const isOpen = openOps.has(g.key);
                       return (
                         <tbody key={g.key} className="divide-y divide-slate-100">
-                          {}
+                          {/* Group header: operator + day totals (click to expand/collapse) */}
                           <tr
                             role="button"
                             tabIndex={0}
@@ -947,7 +966,7 @@ function ReconciliationPanel() {
                               <span className="ml-2 text-slate-400">· {g.items.length} acts</span>
                             </td>
                           </tr>
-                          {}
+                          {/* This operator's activities (shown when the group is expanded) */}
                           {isOpen && g.items.map((b) => {
                             const src = Number(b.source_hrs || 0);
                             const sent = Number(b.sent_hrs || 0);
@@ -1013,7 +1032,7 @@ function ReconciliationPanel() {
             </section>
           )}
 
-          {}
+          {/* ══ LEVEL 3: Machine records behind one confirmation ══ */}
           {rec && (
             <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2.5">
@@ -1025,7 +1044,7 @@ function ReconciliationPanel() {
                 {rec.meta.is_correction && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-700">correction</span>}
               </div>
 
-              {}
+              {/* Confirmation head summary */}
               <div className="grid grid-cols-2 gap-px border-b border-slate-100 bg-slate-100 text-xs sm:grid-cols-4">
                 <div className="bg-white px-4 py-2.5"><div className="text-[11px] text-slate-400">Target</div><div className="font-semibold text-slate-800">{targetText(rec.meta)}</div></div>
                 <div className="bg-white px-4 py-2.5"><div className="text-[11px] text-slate-400">Activity</div><div className="font-semibold text-slate-800">{rec.meta.zbarcodeid || '—'}</div></div>
@@ -1039,7 +1058,7 @@ function ReconciliationPanel() {
                 <div className="p-4 text-sm text-red-600">{recData.error}</div>
               ) : (
                 <>
-                  {}
+                  {/* SAP response */}
                   {recData?.bundle?.sap_response && (
                     <div className="flex items-start gap-2 border-b border-slate-100 bg-slate-50/60 px-4 py-2.5">
                       <Info size={14} className="mt-0.5 flex-shrink-0 text-[#0077b6]" />
@@ -1112,7 +1131,7 @@ function ReconciliationPanel() {
         </>
       )}
 
-      {}
+      {/* Modal konfirmasi exclude record */}
       {confirmExclude && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" role="dialog" aria-modal="true">
           <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">

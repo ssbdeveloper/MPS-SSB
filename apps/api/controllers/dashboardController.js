@@ -998,7 +998,7 @@ async function saveMachineHoursOverride(req, res) {
     );
     res.json({ data: fresh.rows[0] || null, meta: meta() });
   } catch (err) {
-    try { await client.query("ROLLBACK"); } catch {  }
+    try { await client.query("ROLLBACK"); } catch { /* ignore */ }
     console.error("machine-hours-override error:", err);
     res.status(500).json({ error: err.message });
   } finally {
@@ -2375,19 +2375,37 @@ async function unexcludeSapRecord(req, res) {
 }
 
 
+
 async function listSapExclusions(req, res) {
   try {
+    const from = String(req.query.from || "").trim();
+    const to = String(req.query.to || "").trim();
+    const q = String(req.query.q || "").trim();
+    const conds = ["ex.source_system = 'MCH_HOURS'"];
+    const params = [];
+    if (from && to) {
+      params.push(from, to);
+      conds.push(`m.startdatetime::date BETWEEN $${params.length - 1}::date AND $${params.length}::date`);
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      conds.push(`(m.sn_employee ILIKE $${params.length} OR COALESCE(u.full_name, '') ILIKE $${params.length}
+        OR m.machinename ILIKE $${params.length} OR COALESCE(m.status_activitytype, '') ILIKE $${params.length}
+        OR ex.source_row_id ILIKE $${params.length} OR COALESCE(ex.note, '') ILIKE $${params.length})`);
+    }
     const { rows } = await pool.query(
       `SELECT ex.source_row_id, ex.excluded_by, ex.excluded_at, ex.note,
               m.sn_employee AS pernr, COALESCE(u.full_name, '') AS name,
               m.machinename, m.status_activitytype AS activity,
+              to_char(m.startdatetime, 'YYYY-MM-DD') AS record_date,
               m.startdatetime, COALESCE(m.end_effective, m.enddatetime) AS end_dt,
               COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime)))::bigint AS raw_seconds
        FROM public.sap_staging_exclusion ex
        JOIN public.mch_transaction m ON m.proddataid = ex.source_row_id::int
        LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
-       WHERE ex.source_system = 'MCH_HOURS'
+       WHERE ${conds.join(" AND ")}
        ORDER BY ex.excluded_at DESC`,
+      params,
     );
     res.json({ data: { exclusions: rows }, meta: meta() });
   } catch (err) {
