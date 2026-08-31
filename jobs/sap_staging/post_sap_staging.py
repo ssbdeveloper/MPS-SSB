@@ -122,9 +122,11 @@ def claim_rows(
         filters.append("is_productive = %s")
         params.append(productive)
 
+    # TIMESHEET tidak punya bucket_start (NULL — satu baris per tsnumber) sehingga
+    # filter tanggal harus lewat payload ISDD (tanggal kerja dari checkin).
     if date_filter:
-        filters.append("bucket_start::date = %s")
-        params.append(date_filter)
+        filters.append("(bucket_start::date = %s OR (source_system = 'TIMESHEET' AND payload->>'ISDD' = %s))")
+        params.extend([date_filter, date_filter.replace("-", "")])
     if pernr_filter:
         filters.append("(pernr = %s OR pernr_origin = %s)")
         params.extend([pernr_filter, pernr_filter])
