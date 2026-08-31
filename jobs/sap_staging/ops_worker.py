@@ -24,6 +24,7 @@ permintaan QUEUED yang tidak diproses.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -102,7 +103,13 @@ def build_command(action: str, params: dict) -> list | None:
 
 
 def claim_one() -> dict | None:
-    """Ambil satu permintaan QUEUED tertua dan tandai RUNNING (atomik, SKIP LOCKED)."""
+    """Ambil satu permintaan QUEUED tertua MILIK PLANT INI (atau legacy tanpa plant).
+
+    Multi-plant: antrian sap_ops_request SHARED di AWS RDS, tapi tiap plant punya
+    sap-ops-worker sendiri; tanpa filter plant, worker BPN dan Cikupa berebut dan
+    request bisa dieksekusi worker plant lain. API menulis kolom plant saat insert.
+    """
+    plant = os.environ.get("PLANT_SSB") or ""
     with connect_staging() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -112,12 +119,14 @@ def claim_one() -> dict | None:
                  WHERE id = (
                    SELECT id FROM public.sap_ops_request
                     WHERE status = 'QUEUED'
+                      AND (plant = %s OR plant IS NULL)
                     ORDER BY id
                     FOR UPDATE SKIP LOCKED
                     LIMIT 1
                  )
                 RETURNING id, action, params
-                """
+                """,
+                (plant,),
             )
             row = cur.fetchone()
         conn.commit()
