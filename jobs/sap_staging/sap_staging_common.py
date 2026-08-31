@@ -51,12 +51,14 @@ def source_db_config() -> dict:
 
 
 def staging_db_config() -> dict:
+    # Prioritas: SAP_STAGING_DB_* (eksplisit) -> AWS_PG* (kredensial AWS yang
+    # sudah ada di .env) -> DB_* (lokal, untuk staging lokal).
     return {
-        "host": env_value("SAP_STAGING_DB_HOST", env_value("DB_HOST")),
-        "port": env_int("SAP_STAGING_DB_PORT", env_int("DB_PORT", 5432)),
-        "dbname": env_value("SAP_STAGING_DB_NAME", env_value("DB_NAME")),
-        "user": env_value("SAP_STAGING_DB_USER", env_value("DB_USER")),
-        "password": env_value("SAP_STAGING_DB_PASSWORD", env_value("DB_PASSWORD")),
+        "host": env_value("SAP_STAGING_DB_HOST", env_value("AWS_PGhost", env_value("DB_HOST"))),
+        "port": env_int("SAP_STAGING_DB_PORT", env_int("AWS_PGport", env_int("DB_PORT", 5432))),
+        "dbname": env_value("SAP_STAGING_DB_NAME", env_value("AWS_PGDb", env_value("DB_NAME"))),
+        "user": env_value("SAP_STAGING_DB_USER", env_value("AWS_PGuser", env_value("DB_USER"))),
+        "password": env_value("SAP_STAGING_DB_PASSWORD", env_value("AWS_PGpass", env_value("DB_PASSWORD"))),
     }
 
 
@@ -79,7 +81,7 @@ STATUS_CATEGORY_OVERRIDES = {2: "nnva", 10: "nva"}
 
 
 def _parse_minutes(value):
-    
+    """Menit valid (integer >= 1) atau None kalau bukan angka yang masuk akal."""
     try:
         minutes = int(value)
     except (TypeError, ValueError):
@@ -88,7 +90,11 @@ def _parse_minutes(value):
 
 
 def _normalize_type_map(raw, key_pattern) -> dict:
-    
+    """Map per jenis aktivitas: nilai menit integer, atau None = NO LIMIT.
+
+    Key tidak valid / nilai sampah DIBUANG (bukan diganti default) supaya tidak
+    lahir cap yang tidak pernah diminta.
+    """
     if not isinstance(raw, dict):
         return {}
     result = {}
@@ -106,7 +112,10 @@ def _normalize_type_map(raw, key_pattern) -> dict:
 
 
 def legacy_category_minutes(raw):
-    
+    """Nilai kategori lama ({va,nnva,nva} atau angka tunggal) atau None.
+
+    Dipakai HANYA untuk mengekspansi config lama ke map per jenis aktivitas.
+    """
     if raw is None:
         return None
     if isinstance(raw, dict):
@@ -133,7 +142,20 @@ def category_of_activitytype(activitytype) -> str:
 
 
 def normalize_max_record_minutes(raw) -> dict:
-    
+    """Cap per JENIS aktivitas.
+
+    Struktur:
+      "max_record_minutes": {
+        "mch":       {"1": 300, "2": 150, "12": 30, "20": None},
+        "timesheet": {"": 300, "1510": 150, "1670": None}
+      }
+    - "mch" key = mch_statustypes.statusid, "timesheet" key = activitytype
+      ("" = productive/kerja order).
+    - nilai = menit (>= 1) atau None = NO LIMIT (tidak pernah dipotong).
+    - jenis yang TIDAK ada di map = tanpa cap (No Limit).
+    Struktur lama (angka tunggal / {va,nnva,nva}) TIDAK dibuang di sini — lihat
+    expand_legacy_into_type_maps yang mengekspansinya lewat katalog DB.
+    """
     src = raw if isinstance(raw, dict) else {}
     return {
         "mch": _normalize_type_map(src.get("mch"), r"\d+"),
@@ -142,7 +164,7 @@ def normalize_max_record_minutes(raw) -> dict:
 
 
 def load_activity_catalog(conn) -> dict:
-    
+    """Jenis aktivitas dari master DB (mch_statustypes + ews.activity_type_ref)."""
     mch = []
     with conn.cursor() as cur:
         cur.execute(
@@ -175,7 +197,12 @@ def load_activity_catalog(conn) -> dict:
 
 
 def expand_legacy_into_type_maps(max_record: dict, legacy, catalog) -> dict:
-    
+    """Isi jenis yang belum ada di map dengan nilai kategori lama.
+
+    Idempoten: entry yang sudah ada (termasuk None = No Limit) tidak ditimpa.
+    Tanpa ini, config lama ({va,nnva,nva}) akan terbaca sebagai "tidak ada cap"
+    dan seluruh record lolos tanpa potongan — perubahan perilaku yang berbahaya.
+    """
     if not legacy or not catalog:
         return max_record
     mch = dict(max_record.get("mch") or {})
@@ -192,7 +219,22 @@ def expand_legacy_into_type_maps(max_record: dict, legacy, catalog) -> dict:
 
 
 def load_sap_rules(conn) -> dict:
-    
+    """Rules SAP dari plant_config.sap_rules (kolom JSONB, diatur dari halaman
+    Configuration Rules). Fallback ke default bila baris/kunci belum ada.
+
+    Struktur:
+      {
+        "break_windows": [ {"start": "12:00", "end": "13:00", "days": [1,2,3,4,5,6,0]}, ... ],
+        "max_record_minutes": {"mch": {"1": 300, ...}, "timesheet": {"": 300, ...}},
+        "max_record_fallback": {"va": 300, "nnva": 150, "nva": 150} | None
+      }
+    `days` = DOW Postgres (0=Sunday..6=Saturday). break windows TIDAK dihitung
+    dari durasi record PRODUKTIF; max_record_minutes membatasi durasi SATU record
+    source PER JENIS aktivitas (statusid untuk MCH, activitytype untuk TIMESHEET;
+    None = No Limit). `max_record_fallback` = nilai kategori dari config LAMA,
+    dipakai hanya untuk jenis yang tidak ada di map (None kalau config sudah
+    per-jenis) — pengaman supaya config lama berperilaku sama persis.
+    """
     DEFAULT_RULES = {
         "break_windows": [
             {"start": "12:00", "end": "13:00", "days": [1, 2, 3, 4, 5, 6, 0]},
@@ -232,7 +274,7 @@ def load_sap_rules(conn) -> dict:
         rules["max_record_minutes"] = max_record
         rules["max_record_fallback"] = legacy
         return rules
-    except Exception as exc:  
+    except Exception as exc:  # plant_config belum ada / tak bisa dibaca -> default aman
         logging.getLogger("sap_staging").warning(
             "load_sap_rules fallback ke default (%s)", exc
         )
@@ -240,7 +282,7 @@ def load_sap_rules(conn) -> dict:
 
 
 def load_sap_rules_default() -> dict:
-    
+    """Default rules tanpa koneksi DB (dipakai saat load_sap_rules gagal)."""
     return {
         "break_windows": [
             {"start": "12:00", "end": "13:00", "days": [1, 2, 3, 4, 5, 6, 0]},
@@ -256,9 +298,9 @@ def load_sap_rules_default() -> dict:
 
 
 def app_timezone() -> str:
-    
-    
-    
+    # Configured once in the root .env (TIMEZONE). The default must match the rest of the
+    # codebase (apps/api/config/timezone.js) — a divergent default silently shifts day
+    # boundaries by an hour between WITA and WIB.
     return env_value("TIMEZONE", "Asia/Makassar")
 
 
@@ -505,10 +547,10 @@ def insert_staging_rows(conn, rows: list[dict]) -> int:
         for row in rows
     ]
     columns_sql = ", ".join(STAGING_COLUMNS)
-    
-    
-    
-    
+    # Refresh rows that are still PENDING so corrected source data (e.g. fixed machine-hour
+    # durations) flows through on a re-stage. Rows already handed to SAP
+    # (POSTING/POSTED/FAILED/SKIPPED) are left frozen. payload is reset to '{}' so the
+    # PAYLOAD_UPDATE_SQL pass below rebuilds it from the refreshed columns.
     data_columns = [c for c in STAGING_COLUMNS if c not in ("source_system", "source_key")]
     set_sql = ", ".join(f"{c} = EXCLUDED.{c}" for c in data_columns)
     conflict_sql = (
@@ -540,11 +582,11 @@ def insert_staging_rows(conn, rows: list[dict]) -> int:
     return max(inserted, 0)
 
 
-
-
-
-
-
+# Provenance (migration 20260714): catat SEGMEN sumber tiap bundel ke
+# sap_staging_source. Jangkar identitasnya (source_row_id, bucket_start) —
+# tidak berubah walau resep source_key (md5) diubah atau data sumber dikoreksi,
+# sehingga guard di post_sap_staging bisa menolak double-post. Baris yang sudah
+# ter-POST tidak disentuh (unique index parsial menjaganya di level DB).
 PROVENANCE_INSERT_SQL = """
 INSERT INTO sap_staging_source (staging_id, source_system, source_row_id, bucket_start, seconds)
 VALUES %s
@@ -555,7 +597,7 @@ ON CONFLICT (staging_id, source_system, source_row_id, bucket_start) DO UPDATE
 
 
 def insert_provenance(cur, rows: list[dict]) -> int:
-    
+    """Tulis segmen sumber untuk baris yang punya `segments` (MCH_HOURS)."""
     keyed = {
         (row["source_system"], row["source_key"]): row
         for row in rows
@@ -564,9 +606,9 @@ def insert_provenance(cur, rows: list[dict]) -> int:
     if not keyed:
         return 0
 
-    
-    
-    
+    # Ambil id staging untuk tiap (source_system, source_key). Dilakukan lewat SELECT
+    # (bukan RETURNING) karena ON CONFLICT ... WHERE status='PENDING' tidak mengembalikan
+    # baris yang sudah POSTED/FAILED — padahal provenance-nya tetap perlu ada.
     cur.execute(
         """
         SELECT id, source_system, source_key, bucket_start
