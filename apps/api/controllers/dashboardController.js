@@ -4,13 +4,21 @@ const { resolveTimezone } = require("../config/timezone");
 const { classifySapError } = require("../utils/sapErrorClassifier");
 const ExcelJS = require("exceljs");
 
-
-
-
+// Timezone comes from the root .env (TIMEZONE). Never hardcode it here: the daily buckets
+// below compare against CURRENT_DATE, which follows the Postgres session timezone, so a
+// mismatched literal silently shifts rows into the wrong calendar day.
 const TZ = resolveTimezone();
 
 
 const meta = () => ({ generated_at: new Date().toISOString() });
+
+// ── Plant scope ────────────────────────────────────────────────────────────
+// Setiap server hanya menampilkan staging plant-nya sendiri (PLANT_SSB dari env;
+// kosong di dev = tanpa filter). Dipakai di SEMUA query sap_* supaya operator
+// Cikupa tidak melihat baris Balikpapan dan sebaliknya.
+const PLANT_SSB = /^\d{4}$/.test(process.env.PLANT_SSB || "") ? process.env.PLANT_SSB : null;
+const PW_SQL = PLANT_SSB ? ` AND werks = '${PLANT_SSB}'` : ""; // query tanpa alias
+const plantScope = (alias = "st") => (PLANT_SSB ? ` AND ${alias}.werks = '${PLANT_SSB}'` : "");
 let operationsHubCache = null;
 const OPERATIONS_HUB_TTL_MS = 30 * 1000;
 
@@ -28,7 +36,7 @@ async function refreshOrderMatviews() {
   }
 }
 
-
+// GET /dashboard/order-progress — plan vs actual per order with weight-based progress
 async function getOrderProgress(req, res) {
   try {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 50));
@@ -49,13 +57,13 @@ async function getOrderProgress(req, res) {
       where.push("m.total_actual_hours >= m.total_planhours * 0.9 AND m.total_actual_hours < m.total_planhours");
     }
 
-    
-    
-    
-    
-    
-    
-    
+    // Fase 6 (D4): mv_order_plan_vs_actual menjumlahkan SELURUH sow.planhours, termasuk operasi
+    // yang ditandai subcont. Matview tidak bisa diberi predikat eksklusi tanpa DROP+CREATE, jadi
+    // koreksinya dilakukan di sini: jam subcont per order dikurangkan dari total_planhours, dan
+    // actual_pct / is_exceeded dihitung ulang dari nilai yang sudah dikoreksi. Tanpa ini, layar
+    // Order Progress melaporkan beban internal yang berbeda dari endpoint lain untuk order yang sama.
+    // Filter di CTE subcont SENGAJA menyalin filter matview (planhours NOT NULL + non-TECO/CLSD)
+    // supaya tidak mengurangi jam yang memang tidak pernah ikut dijumlahkan.
     const MV_ADJUSTED = `
       WITH subcont AS (
         SELECT ltrim(s.order_no, '0') AS order_key,
@@ -106,7 +114,7 @@ async function getOrderProgress(req, res) {
   }
 }
 
-
+// GET /dashboard/order-activity-detail — per-activity breakdown for an order
 async function getOrderActivityDetail(req, res) {
   try {
     const { orderNo } = req.params;
@@ -133,7 +141,7 @@ async function getOrderActivityDetail(req, res) {
   }
 }
 
-
+// GET /dashboard/operation-timesheet-history — timesheet history per operation
 async function getOperationTimesheetHistory(req, res) {
   try {
     const { orderNo, operationNo } = req.query;
@@ -343,10 +351,10 @@ async function getOperationsHub(req, res) {
       `),
       q(`
         SELECT
-          (SELECT COUNT(*) FROM public.sap_timesheet_staging WHERE UPPER(COALESCE(status,'')) = 'PENDING')::int AS pending,
-          (SELECT COUNT(*) FROM public.sap_timesheet_staging WHERE UPPER(COALESCE(status,'')) = 'FAILED')::int AS failed,
-          (SELECT COUNT(*) FROM public.sap_timesheet_staging WHERE UPPER(COALESCE(status,'')) = 'POSTED' AND created_at >= now() - interval '7 days')::int AS posted_7d,
-          (SELECT COUNT(*) FROM public.sap_timesheet_staging WHERE created_at >= now() - interval '7 days')::int AS staged_7d
+          (SELECT COUNT(*) FROM public.sap_timesheet_staging WHERE UPPER(COALESCE(status,'')) = 'PENDING'${PW_SQL})::int AS pending,
+          (SELECT COUNT(*) FROM public.sap_timesheet_staging WHERE UPPER(COALESCE(status,'')) = 'FAILED'${PW_SQL})::int AS failed,
+          (SELECT COUNT(*) FROM public.sap_timesheet_staging WHERE UPPER(COALESCE(status,'')) = 'POSTED' AND created_at >= now() - interval '7 days'${PW_SQL})::int AS posted_7d,
+          (SELECT COUNT(*) FROM public.sap_timesheet_staging WHERE created_at >= now() - interval '7 days'${PW_SQL})::int AS staged_7d
       `),
       q(`
         WITH base AS (
@@ -439,7 +447,7 @@ async function getOperationsHub(req, res) {
   }
 }
 
-
+// GET /dashboard/sap-timesheet-staging-log
 async function getSapTimesheetStagingLog(req, res) {
   try {
     const limit = Math.min(100, Math.max(10, parseInt(req.query.limit, 10) || 30));
@@ -459,6 +467,8 @@ async function getSapTimesheetStagingLog(req, res) {
       params.push(status);
       where.push(`status = $${params.length}`);
     }
+
+    if (PLANT_SSB) where.push(`werks = '${PLANT_SSB}'`);
 
     if (search) {
       params.push(`%${search}%`);
@@ -522,8 +532,8 @@ async function getSapTimesheetStagingLog(req, res) {
     const rows = result.rows.slice(0, limit);
     const extraRow = result.rows[limit];
 
-    
-    
+    // Terjemahkan pesan SAP jadi sebab yang bisa ditindak — di server, supaya label
+    // konsisten dengan pengelompokan di endpoint ringkasan (satu classifier).
     const enriched = rows.map((row) => {
       const cause = classifySapError(row.sap_error || row.sap_response_text);
       return {
@@ -549,15 +559,16 @@ async function getSapTimesheetStagingLog(req, res) {
   }
 }
 
-
-
-
+// GET /dashboard/sap-timesheet-staging-summary
+// Ringkasan antrian: hitungan per status + kegagalan dikelompokkan per SEBAB (bukan per
+// baris) supaya "56 baris gagal karena work center yang sama" terbaca sekali pandang.
 async function getSapTimesheetStagingSummary(req, res) {
   try {
     const [byStatus, dateRange, failing] = await Promise.all([
       sapPool.query(`
         SELECT status, COUNT(*)::int AS n
         FROM public.sap_timesheet_staging
+        WHERE TRUE${PW_SQL}
         GROUP BY status
       `),
       sapPool.query(`
@@ -567,12 +578,13 @@ async function getSapTimesheetStagingSummary(req, res) {
           COUNT(*) FILTER (WHERE status = 'PENDING' AND bucket_start::date = (now() AT TIME ZONE '${TZ}')::date)::int AS pending_today,
           COUNT(*) FILTER (WHERE status = 'POSTED'  AND posted_at::date   = (now() AT TIME ZONE '${TZ}')::date)::int AS posted_today
         FROM public.sap_timesheet_staging
+        WHERE TRUE${PW_SQL}
       `),
-      
+      // Hanya FAILED + SKIPPED perlu triase. Ambil pesan mentah, klasifikasi di JS.
       sapPool.query(`
         SELECT id, status, sap_error, sap_response_text
         FROM public.sap_timesheet_staging
-        WHERE status IN ('FAILED', 'SKIPPED')
+        WHERE status IN ('FAILED', 'SKIPPED')${PW_SQL}
         ORDER BY id DESC
       `),
     ]);
@@ -584,7 +596,7 @@ async function getSapTimesheetStagingSummary(req, res) {
       total += r.n;
     }
 
-    
+    // Kelompokkan kegagalan per sebab.
     const groups = new Map();
     for (const r of failing.rows) {
       const cause = classifySapError(r.sap_error || r.sap_response_text);
@@ -625,10 +637,10 @@ async function getSapTimesheetStagingSummary(req, res) {
   }
 }
 
-
-
-
-
+// Kelayakan SAP = kolom status_record (satu sumber kebenaran; gerbang staging & kolom
+// pakai logika productive/unproductive yang sama — migration 20260715_status_record_
+// unproductive). Dashboard hanya menampilkan record non-0/3/4 (DISPLAY_EXCLUDE), jadi di
+// antara yang tampil, status_record = TRUE berarti layak SAP.
 const SAP_ELIGIBLE_SQL = "m.status_record";
 
 const POSTED_EXISTS_SQL = `EXISTS (
@@ -638,11 +650,11 @@ const POSTED_EXISTS_SQL = `EXISTS (
     AND s.posted_at IS NOT NULL
 )`;
 
-
-
-
-
-
+// Alasan sebuah baris TIDAK layak SAP — enumerable, untuk ditampilkan di drill.
+// Label status diambil dari status_description (mch_statustypes) supaya tidak salah
+// hardcode: 0=Off, 3=Downtime, 4=No Job.
+// Alasan sebuah baris TIDAK layak (status_record = false). Hanya bermakna untuk record
+// non-0/3/4 yang tampil di drill. Selaras dengan definisi status_record baru.
 const INELIGIBLE_REASON_SQL = `CASE
   WHEN m.enddatetime IS NULL THEN 'Not finished (no end time)'
   WHEN NULLIF(btrim(m.sn_employee),'') IS NULL THEN 'No operator'
@@ -653,8 +665,8 @@ const INELIGIBLE_REASON_SQL = `CASE
   ELSE NULL
 END`;
 
-
-
+// Off (0), Downtime (3), No Job (4): bukan jam kerja nyata. Dikeluarkan TOTAL dari
+// heatmap & drill — tidak dihitung sebagai jam, tidak muncul di daftar record.
 const DISPLAY_EXCLUDE_SQL = "m.statusid NOT IN (0, 3, 4)";
 
 function clampDateRange(fromRaw, toRaw, defaultDays = 7, maxDays = 62) {
@@ -664,14 +676,14 @@ function clampDateRange(fromRaw, toRaw, defaultDays = 7, maxDays = 62) {
   const day = 86400000;
   if (!from) from = new Date(to.getTime() - (defaultDays - 1) * day);
   if (from > to) [from, to] = [to, from];
-  
+  // batasi rentang supaya tidak men-scan berbulan-bulan sekaligus
   if ((to - from) / day > maxDays) from = new Date(to.getTime() - maxDays * day);
   const iso = (d) => d.toISOString().slice(0, 10);
   return { from: iso(from), to: iso(to) };
 }
 
-
-
+// GET /dashboard/machine-hours-matrix?from=&to=
+// Matriks jam per operator per hari + overlay SAP (total / layak / terkirim).
 async function getMachineHoursMatrix(req, res) {
   try {
     const { from, to } = clampDateRange(req.query.from, req.query.to);
@@ -696,7 +708,7 @@ async function getMachineHoursMatrix(req, res) {
       [from, to]
     );
 
-    
+    // Bentuk ke: daftar hari, daftar operator (urut jam desc), sel per (operator,hari).
     const days = [];
     const dayCursor = new Date(`${from}T00:00:00Z`);
     const end = new Date(`${to}T00:00:00Z`);
@@ -746,9 +758,9 @@ async function getMachineHoursMatrix(req, res) {
   }
 }
 
-
-
-
+// GET /dashboard/machine-hours-records?operator=&day=&bucket=
+// Drill: record mch_transaction untuk satu (operator, hari). bucket opsional:
+// eligible | posted | ineligible.
 async function getMachineHoursRecords(req, res) {
   try {
     const operator = String(req.query.operator || "").trim();
@@ -761,7 +773,7 @@ async function getMachineHoursRecords(req, res) {
     const params = [day];
     const where = [
       `(m.startdatetime AT TIME ZONE '${TZ}')::date = $1::date`,
-      DISPLAY_EXCLUDE_SQL, 
+      DISPLAY_EXCLUDE_SQL, // Off + No Job dikeluarkan dari drill
     ];
     if (operator === "__none__") {
       where.push(`NULLIF(btrim(m.sn_employee),'') IS NULL`);
@@ -801,14 +813,14 @@ async function getMachineHoursRecords(req, res) {
   }
 }
 
-
-
-
+// GET /dashboard/ph3-jobs?search=&limit=
+// Picker job dari ph3_order untuk koreksi manual (edit job). Satu baris per
+// (order_no, operation_no), ambil yang terbaru (id DESC) — konsisten dengan ETL.
 async function getPh3Jobs(req, res) {
   try {
     const search = String(req.query.search || "").trim();
-    
-    
+    // Naikkan limit: satu order bisa punya banyak operasi. Limit lama (30/50) + urutan
+    // TEKS memotong operasi ber-nomor besar (mis. op '70' kalah dari '1600' secara teks).
     const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
     const params = [];
     let filter = "COALESCE(order_no,'') <> '' AND COALESCE(operation_no,'') <> ''";
@@ -819,8 +831,8 @@ async function getPh3Jobs(req, res) {
     }
     params.push(limit);
 
-    
-    
+    // DISTINCT ON dedup (operasi terbaru per order+op), lalu urutkan operation_no ASCENDING
+    // secara NUMERIK (bukan teks) — 10 < 70 < 150 < 1600, bukan 10 < 150 < 1600 < 70.
     const result = await pool.query(
       `
       SELECT order_no, operation_no, confirmation_number,
@@ -847,8 +859,8 @@ async function getPh3Jobs(req, res) {
   }
 }
 
-
-
+// GET /dashboard/operators?search=
+// Picker operator dari usernfc untuk koreksi manual (assign operator).
 async function getOperators(req, res) {
   try {
     const search = String(req.query.search || "").trim();
@@ -875,10 +887,10 @@ async function getOperators(req, res) {
   }
 }
 
-
-
-
-
+// POST /dashboard/machine-hours-override
+// Koreksi manual satu record mch_transaction: assign job (dari ph3_order) dan/atau
+// operator (snssb). Diterapkan LANGSUNG ke mch_transaction + dicatat di
+// mch_transaction_override supaya bertahan re-derivasi ETL (lihat migration).
 async function saveMachineHoursOverride(req, res) {
   const client = await pool.connect();
   try {
@@ -899,7 +911,7 @@ async function saveMachineHoursOverride(req, res) {
       return res.status(400).json({ error: "Nothing to change (set a job or operator)" });
     }
 
-    
+    // Tolak kalau sudah terkirim ke SAP — koreksi butuh storno, bukan edit senyap.
     const posted = await client.query(
       `SELECT 1 FROM public.sap_staging_source
         WHERE source_system='MCH_HOURS' AND source_row_id=$1::text AND posted_at IS NOT NULL LIMIT 1`,
@@ -912,7 +924,7 @@ async function saveMachineHoursOverride(req, res) {
     await client.query("BEGIN");
 
     if (orderNo) {
-      
+      // Ambil field job dari ph3_order (terbaru) + SOW untuk workcenter/ssbr.
       const upd = await client.query(
         `
         WITH j AS (
@@ -967,7 +979,7 @@ async function saveMachineHoursOverride(req, res) {
       );
     }
 
-    
+    // Catat override (bertahan re-derivasi). Merge dengan yang ada.
     await client.query(
       `
       INSERT INTO public.mch_transaction_override (proddataid, order_no, operation_no, sn_employee, note, updated_by, updated_at)
@@ -985,7 +997,7 @@ async function saveMachineHoursOverride(req, res) {
 
     await client.query("COMMIT");
 
-    
+    // Kembalikan record terbaru + status kelayakan.
     const fresh = await pool.query(
       `
       SELECT m.proddataid, m.order_no, m.operation_no, m.confirmation_number,
@@ -1007,10 +1019,10 @@ async function saveMachineHoursOverride(req, res) {
   }
 }
 
-
-
-
-
+// POST /dashboard/sap-ops/enqueue
+// Titipkan permintaan operasi (stage_catchup / retry_failed) ke antrian sap_ops_request.
+// API TIDAK menjalankan Python — worker (ops_worker.py) yang mengeksekusi. Lihat migration
+// 20260715_sap_ops_request untuk alasannya.
 async function enqueueSapOps(req, res) {
   const ALLOWED = new Set(["stage_catchup", "retry_failed", "rebuild_pending", "post_corrections", "post_bundles", "post_date", "post_operator", "recalc_date"]);
   try {
@@ -1021,7 +1033,7 @@ async function enqueueSapOps(req, res) {
     const requestedBy = req.header("x-user-id") || null;
     const params = req.body?.params && typeof req.body.params === "object" ? req.body.params : {};
 
-    
+    // Validasi param wajib per aksi.
     if (action === "rebuild_pending") {
       const fromDate = String(params.from_date || "").trim();
       if (!/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) {
@@ -1047,16 +1059,16 @@ async function enqueueSapOps(req, res) {
       }
     }
 
-    
-    
-    
+    // Self-heal: buang QUEUED basi (>15 mnt tak diproses = worker tak konsumsi antrian)
+    // supaya tombol tak 409 selamanya kalau ops_worker mati/salah DB. RUNNING tidak
+    // disentuh di sini (hindari double-run); ops_worker sendiri mereset RUNNING yatim.
     await sapPool.query(
       `DELETE FROM public.sap_ops_request
        WHERE action = $1 AND status = 'QUEUED' AND requested_at < now() - interval '15 minutes'`,
       [action]
     );
 
-    
+    // Unique index parsial menolak kalau sudah ada QUEUED/RUNNING untuk aksi yang sama.
     let result;
     try {
       result = await sapPool.query(
@@ -1079,8 +1091,8 @@ async function enqueueSapOps(req, res) {
   }
 }
 
-
-
+// GET /dashboard/sap-corrections — daftar bundel koreksi (is_correction=true) untuk UI.
+// Koreksi = jam yang datang setelah harinya ter-post; di-post MANUAL oleh admin.
 async function getSapCorrections(req, res) {
   try {
     const status = String(req.query.status || "PENDING").toUpperCase();
@@ -1088,6 +1100,7 @@ async function getSapCorrections(req, res) {
     const where = ["is_correction = true"];
     const params = [];
     if (status !== "ALL") { params.push(status); where.push(`status = $${params.length}`); }
+    if (PLANT_SSB) where.push(`werks = '${PLANT_SSB}'`);
     if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "")) { params.push(req.query.from); where.push(`bucket_start::date >= $${params.length}`); }
     if (/^\d{4}-\d{2}-\d{2}$/.test(req.query.to || "")) { params.push(req.query.to); where.push(`bucket_start::date <= $${params.length}`); }
     if (search) {
@@ -1111,15 +1124,15 @@ async function getSapCorrections(req, res) {
   }
 }
 
-
-
-
+// POST /dashboard/sap-ops/post-corrections — antre kirim manual bundel koreksi (by id).
+// Worker menjalankan post_sap_staging.py --ids <ids> (claim_selected_rows tak memfilter
+// is_correction). SAP aditif -> menambah jam ke order.
 async function postCorrections(req, res) {
   try {
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map((n) => parseInt(n, 10)).filter(Number.isFinite) : [];
     if (!ids.length) return res.status(400).json({ error: "No correction bundles selected" });
     const requestedBy = req.header("x-user-id") || null;
-    
+    // Self-heal QUEUED basi (lihat enqueueSapOps).
     await sapPool.query(
       `DELETE FROM public.sap_ops_request
        WHERE action = 'post_corrections' AND status = 'QUEUED' AND requested_at < now() - interval '15 minutes'`
@@ -1143,7 +1156,7 @@ async function postCorrections(req, res) {
   }
 }
 
-
+// GET /dashboard/sap-ops/requests — status permintaan terbaru (untuk UI polling)
 async function getSapOpsRequests(req, res) {
   try {
     const result = await sapPool.query(
@@ -1159,7 +1172,7 @@ async function getSapOpsRequests(req, res) {
   }
 }
 
-
+// GET /dashboard/kpi
 async function getKpi(req, res) {
   try {
     const [activeOrders, overdueOrders, todayHours, avgProgress] =
@@ -1204,7 +1217,7 @@ async function getKpi(req, res) {
   }
 }
 
-
+// GET /dashboard/order-status
 async function getOrderStatus(req, res) {
   try {
     const result = await pool.query(`
@@ -1221,7 +1234,7 @@ async function getOrderStatus(req, res) {
   }
 }
 
-
+// GET /dashboard/workload
 async function getWorkload(req, res) {
   try {
     const result = await pool.query(`
@@ -1253,7 +1266,7 @@ async function getWorkload(req, res) {
   }
 }
 
-
+// GET /dashboard/daily-hours?workcenter=all&days=30
 async function getDailyHours(req, res) {
   try {
     const workcenter = req.query.workcenter || "all";
@@ -1279,7 +1292,7 @@ async function getDailyHours(req, res) {
   }
 }
 
-
+// GET /dashboard/operator-efficiency?from=&to=&workcenter=all
 async function getOperatorEfficiency(req, res) {
   try {
     const workcenter = req.query.workcenter || "all";
@@ -1321,7 +1334,7 @@ async function getOperatorEfficiency(req, res) {
   }
 }
 
-
+// GET /dashboard/ontime-monthly
 async function getOntimeMonthly(req, res) {
   try {
     const result = await pool.query(`
@@ -1351,7 +1364,7 @@ async function getOntimeMonthly(req, res) {
   }
 }
 
-
+// GET /dashboard/progress-distribution
 async function getProgressDistribution(req, res) {
   try {
     const result = await pool.query(`
@@ -1378,7 +1391,7 @@ async function getProgressDistribution(req, res) {
   }
 }
 
-
+// GET /dashboard/validation-rate?workcenter=all
 async function getValidationRate(req, res) {
   try {
     const workcenter = req.query.workcenter || "all";
@@ -1407,7 +1420,7 @@ async function getValidationRate(req, res) {
   }
 }
 
-
+// GET /dashboard/operator-heatmap?days=30
 async function getOperatorHeatmap(req, res) {
   try {
     const days = Math.min(90, Math.max(1, parseInt(req.query.days) || 30));
@@ -1432,7 +1445,7 @@ async function getOperatorHeatmap(req, res) {
   }
 }
 
-
+// GET /dashboard/workcenter-list
 async function getWorkcenterList(req, res) {
   try {
     const result = await pool.query(`
@@ -1447,9 +1460,9 @@ async function getWorkcenterList(req, res) {
   }
 }
 
-
-
-
+// Kelayakan SAP — SALINAN dari jobs/sap_staging/stage_sap_timesheet.fetch_machine_hour_rows.
+// WAJIB sinkron dengan stager: rekonsiliasi hanya bermakna kalau memakai definisi "eligible"
+// yang IDENTIK dengan yang benar-benar di-stage. Alias tabel = m.
 const MCH_SAP_ELIGIBLE = `
   COALESCE(m.end_effective, m.enddatetime) > m.startdatetime
   AND (
@@ -1469,8 +1482,8 @@ const MCH_SAP_ELIGIBLE = `
   AND (m.statusid <> 5 OR COALESCE(m.duration_seconds, EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime))) <= 60)
 `;
 
-
-
+// Kontribusi CLAMP satu baris ke satu hari-bundel: [start, end_effective] ∩ [bucket, bucket+1hr].
+// Dipakai untuk menaksir berapa jam bundel PENDING akan mengecil saat di-re-stage.
 const CLAMPED_SEG_SECONDS = `
   GREATEST(EXTRACT(EPOCH FROM (
     LEAST(COALESCE(m.end_effective, m.enddatetime), src.bucket_start + interval '1 day')
@@ -1478,9 +1491,9 @@ const CLAMPED_SEG_SECONDS = `
   ))::bigint, 0)
 `;
 
-
-
-
+// Cap max record duration PER JENIS AKTIVITAS (plant_config.sap_rules) — normalisasi
+// + ekspansi config lama memakai helper yang sama dengan configRulesController, supaya
+// rekonsiliasi tidak pernah beda arah dengan staging.
 const {
   normalizeMaxRecordMinutes,
   legacyCategoryMinutes,
@@ -1504,16 +1517,16 @@ async function loadMaxRecordConfig() {
   }
 }
 
-
-
+// Map cap di-inline sebagai literal jsonb: key hanya digit, nilai integer/null hasil
+// normalizer, jadi tidak ada risiko injeksi (escape kutip tetap dilakukan).
 const jsonbLiteral = (obj) => `'${JSON.stringify(obj || {}).replace(/'/g, "''")}'::jsonb`;
 const intOrNull = (v) => {
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) && n >= 1 ? String(n) : "NULL";
 };
 
-
-
+// Menit cap untuk satu record mch_transaction (alias m). NULL = No Limit.
+// CASE-nya IDENTIK dengan stage_sap_timesheet.py source_rows.
 const MCH_CAP_MINUTES = (cfg) => {
   const L = jsonbLiteral(cfg.mch);
   const fb = cfg.fallback || {};
@@ -1529,8 +1542,8 @@ const MCH_CAP_MINUTES = (cfg) => {
     END)`;
 };
 
-
-
+// Detik yang DIPOTONG dari satu record mch_transaction karena melebihi cap jenisnya.
+// Cap NULL (No Limit) -> GREATEST(NULL, 0) = 0 detik dipotong.
 const CAP_CUT_SECONDS = (cfg) => `
   GREATEST(
     EXTRACT(EPOCH FROM (COALESCE(m.end_effective, m.enddatetime) - m.startdatetime))
@@ -1538,16 +1551,16 @@ const CAP_CUT_SECONDS = (cfg) => `
     0
   )`;
 
-
-
+// Akhir record SETELAH cap (start + N menit sesuai jenis) — nilai yang benar-benar
+// dipakai staging. Cap NULL -> LEAST mengabaikan NULL -> akhir asli (tidak dipotong).
 const END_CAPPED_EXPR = (cfg) => `
   LEAST(
     COALESCE(m.end_effective, m.enddatetime),
     m.startdatetime + (${MCH_CAP_MINUTES(cfg)} || ' minutes')::interval
   )`;
 
-
-
+// ---- TIMESHEET (alias t = timesheet_transaction) -----------------------------
+// Cap per activitytype ("" = productive). IDENTIK dengan stage_timesheet_transaction.py.
 const TS_CAP_MINUTES = (cfg) => {
   const L = jsonbLiteral(cfg.timesheet);
   const fb = cfg.fallback || {};
@@ -1562,9 +1575,9 @@ const TS_CAP_MINUTES = (cfg) => {
 
 const TS_RAW_SECONDS = `EXTRACT(EPOCH FROM (t.longdate_checkout - t.longdate_checkin))::bigint`;
 
-
-
-
+// Potongan break hours untuk record timesheet — HANYA non-produktif (activitytype
+// terisi), per hari (record bisa lintas tengah malam). Sama dengan CTE break di
+// stage_timesheet_transaction.py.
 const TS_BREAK_CUT_SECONDS = `
   COALESCE((
     SELECT SUM(EXTRACT(EPOCH FROM (
@@ -1590,7 +1603,7 @@ const TS_BREAK_CUT_SECONDS = `
       AND seg.seg_end > g.day_bucket + (bw->>'start')::time
   ), 0)::bigint`;
 
-
+// Detik dipotong cap untuk timesheet (setelah potongan break, seperti staging).
 const TS_CAP_CUT_SECONDS = (cfg) => `
   GREATEST(
     GREATEST(${TS_RAW_SECONDS} - (${TS_BREAK_CUT_SECONDS}), 0)
@@ -1598,11 +1611,11 @@ const TS_CAP_CUT_SECONDS = (cfg) => `
     0
   )`;
 
-
-
-
-
-
+// Records rekonsiliasi dalam SATU bentuk kolom untuk dua sumber:
+//   MCH_HOURS = 1 baris per segmen mch_transaction (bundel bisa banyak segmen)
+//   TIMESHEET = 1 baris staging = 1 tsnumber (tidak ada provenance/bundling)
+// Dipakai endpoint records (paginated) DAN sheet Records di export (kolom Source).
+// $1 = from date, $2 = to date, $3 = pola search (kalau search=true).
 function buildRecordsSql(cfg, { source = "all", search = false } = {}) {
   const cutSec = CAP_CUT_SECONDS(cfg);
   const endCapped = END_CAPPED_EXPR(cfg);
@@ -1646,11 +1659,11 @@ function buildRecordsSql(cfg, { source = "all", search = false } = {}) {
     LEFT JOIN public.sap_staging_exclusion ex2
       ON ex2.source_system = 'MCH_HOURS' AND ex2.source_row_id = m.proddataid::text
     WHERE src.source_system = 'MCH_HOURS'
-      AND st.bucket_start::date BETWEEN $1::date AND $2::date ${mchSearch}`;
+      AND st.bucket_start::date BETWEEN $1::date AND $2::date${plantScope("st")} ${mchSearch}`;
 
-  
-  
-  
+  // TIMESHEET: bucket_start NULL by design -> tanggal dari source_min_start (= checkin
+  // yang sudah dikonversi ke TZ aplikasi saat staging). end_capped = jam sintetis yang
+  // benar-benar dikirim ke SAP (checkin + total_seconds).
   const tsSql = `
     SELECT
       'TIMESHEET'::text AS source,
@@ -1679,21 +1692,21 @@ function buildRecordsSql(cfg, { source = "all", search = false } = {}) {
       false AS excluded,
       false AS can_exclude
     FROM public.sap_timesheet_staging st
-    JOIN public.timesheet_transaction t ON t.tsnumber::text = st.source_key
+    JOIN public.timesheet_transaction t ON t.tsnumber::text = split_part(st.source_key, ':', 2)
     LEFT JOIN public.usernfc u ON u.snssb = COALESCE(NULLIF(st.pernr_origin, ''), st.pernr)
     LEFT JOIN ews.activity_type_ref r ON r.activitytype = BTRIM(COALESCE(t.activitytype, ''))
     WHERE st.source_system = 'TIMESHEET'
-      AND st.source_min_start::date BETWEEN $1::date AND $2::date ${tsSearch}`;
+      AND st.source_min_start::date BETWEEN $1::date AND $2::date${plantScope("st")} ${tsSearch}`;
 
   if (source === "mch") return mchSql;
   if (source === "timesheet") return tsSql;
   return `${mchSql}\n    UNION ALL\n${tsSql}`;
 }
 
-
-
-
-
+// Versi PAGINATED (endpoint records): kolom berat (break/cap cut, correlated subquery)
+// dihitung HANYA untuk baris halaman yang tampil. Alur: base (pemilihan staging ringan)
+// -> count -> page (LIMIT/OFFSET) -> recs (join ulang + kolom berat, terbatas halaman).
+// $1/$2 = range, $3 = search (kalau search), LIMIT/OFFSET di CTE page.
 function buildRecordsPageSql(cfg, { source = "all", search = false } = {}) {
   const cutSec = CAP_CUT_SECONDS(cfg);
   const endCapped = END_CAPPED_EXPR(cfg);
@@ -1716,7 +1729,7 @@ function buildRecordsPageSql(cfg, { source = "all", search = false } = {}) {
     JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
     LEFT JOIN public.usernfc u ON u.snssb = m.sn_employee
     WHERE src.source_system = 'MCH_HOURS'
-      AND st.bucket_start::date BETWEEN $1::date AND $2::date ${mchSearch}`;
+      AND st.bucket_start::date BETWEEN $1::date AND $2::date${plantScope("st")} ${mchSearch}`;
 
   const tsBase = `
     SELECT 'TIMESHEET'::text AS source,
@@ -1725,10 +1738,10 @@ function buildRecordsPageSql(cfg, { source = "all", search = false } = {}) {
            t.tsnumber::text AS row_id,
            t.longdate_checkin AT TIME ZONE '${TZ}' AS start
     FROM public.sap_timesheet_staging st
-    JOIN public.timesheet_transaction t ON t.tsnumber::text = st.source_key
+    JOIN public.timesheet_transaction t ON t.tsnumber::text = split_part(st.source_key, ':', 2)
     LEFT JOIN public.usernfc u ON u.snssb = COALESCE(NULLIF(st.pernr_origin, ''), st.pernr)
     WHERE st.source_system = 'TIMESHEET'
-      AND st.source_min_start::date BETWEEN $1::date AND $2::date ${tsSearch}`;
+      AND st.source_min_start::date BETWEEN $1::date AND $2::date${plantScope("st")} ${tsSearch}`;
 
   let baseSql = source === "mch" ? mchBase : source === "timesheet" ? tsBase : `${mchBase}\n    UNION ALL\n${tsBase}`;
 
@@ -1819,8 +1832,8 @@ function buildRecordsPageSql(cfg, { source = "all", search = false } = {}) {
     ORDER BY r.sort_day DESC, r.staging_id DESC, r.start`;
 }
 
-
-
+// Detik yang DIBUANG karena overlap break hours (rules break_windows) — hanya untuk
+// segmen NON-PRODUKTIF (M1/M2 dikecualikan, identik dengan stage_sap_timesheet.py).
 const BREAK_CUT_SECONDS = `
   COALESCE((
     SELECT SUM(EXTRACT(EPOCH FROM (
@@ -1836,7 +1849,7 @@ const BREAK_CUT_SECONDS = `
   ), 0)::bigint
 `;
 
-
+// Data rekonsiliasi (dipakai endpoint JSON dan export Excel — satu sumber kebenaran).
 async function loadSapReconciliationData(fromDate, toDate) {
   const { rows: rr } = await pool.query(
     `SELECT COALESCE($1::date, (now() AT TIME ZONE '${TZ}')::date - 29) AS from_d,
@@ -1849,8 +1862,8 @@ async function loadSapReconciliationData(fromDate, toDate) {
   const cutSec = CAP_CUT_SECONDS(capCfg);
 
   const [mchByDate, stgByDate, actions] = await Promise.all([
-    
-    
+    // mch_transaction eligible per hari kerja: jam mentah, clamp, potongan max record,
+    // overlap (nyangkut).
     pool.query(
       `SELECT m.startdatetime::date AS d,
          round(sum(EXTRACT(EPOCH FROM (m.enddatetime - m.startdatetime)))/3600.0, 2) AS raw_hrs,
@@ -1864,9 +1877,9 @@ async function loadSapReconciliationData(fromDate, toDate) {
        GROUP BY 1 ORDER BY 1`,
       [fromD, toD],
     ),
-    
-    
-    
+    // staging bundel per hari-bundel + status + jenis (produktif=ke order, unproduktif=cost-center).
+    // Pemisahan is_productive PENTING: CSV konfirmasi-order SAP hanya memuat yang PRODUKTIF,
+    // jadi tanpa split, "POSTED" total (prod+unprod) tak akan pernah cocok dengan CSV.
     sapPool.query(
       `SELECT st.bucket_start::date AS d, st.status, st.is_productive,
          round(sum(st.total_seconds)/3600.0, 2) AS hrs, count(*)::int AS n
@@ -1875,8 +1888,8 @@ async function loadSapReconciliationData(fromDate, toDate) {
        GROUP BY 1, 2, 3`,
       [fromD, toD],
     ),
-    
-    
+    // Perlu diperbaiki: bundel PENDING yang disuapi baris nyangkut (mengecil saat re-stage),
+    // plus FAILED & SKIPPED.
     pool.query(
       `WITH pend AS (
          SELECT src.staging_id,
@@ -1886,7 +1899,7 @@ async function loadSapReconciliationData(fromDate, toDate) {
          JOIN public.sap_timesheet_staging st
            ON st.id = src.staging_id AND st.status = 'PENDING' AND st.source_system = 'MCH_HOURS'
          JOIN public.mch_transaction m ON m.proddataid = src.source_row_id::int
-         WHERE st.bucket_start::date BETWEEN $1 AND $2
+         WHERE st.bucket_start::date BETWEEN $1 AND $2${plantScope("st")}
          GROUP BY src.staging_id
          HAVING sum(src.seconds) > sum(${CLAMPED_SEG_SECONDS})
        )
@@ -1901,7 +1914,7 @@ async function loadSapReconciliationData(fromDate, toDate) {
     ),
   ]);
 
-  
+  // Gabung per tanggal.
   const byDate = new Map();
   const row = (d) => {
     const key = String(d);
@@ -1911,8 +1924,8 @@ async function loadSapReconciliationData(fromDate, toDate) {
         rows_eligible: 0, rows_stuck: 0,
         staged_hrs: 0, posted_hrs: 0, pending_hrs: 0, failed_hrs: 0, skipped_hrs: 0,
         posted_n: 0, pending_n: 0, failed_n: 0, skipped_n: 0,
-        
-        
+        // POSTED dipecah: ke ORDER (produktif, muncul di CSV konfirmasi SAP) vs
+        // COST-CENTER (unproduktif/LSTAR, TIDAK di CSV order).
         posted_order_hrs: 0, posted_cc_hrs: 0,
       });
     }
@@ -1937,11 +1950,11 @@ async function loadSapReconciliationData(fromDate, toDate) {
       if (r.is_productive) e.posted_order_hrs += num(r.hrs);
       else e.posted_cc_hrs += num(r.hrs);
     }
-    
+    // POSTING (langka, transient) dijumlahkan ke staged tapi tak dikolomkan sendiri.
   }
-  const by_date = [...byDate.values()].sort((a, b) => (a.date < b.date ? 1 : -1)); 
+  const by_date = [...byDate.values()].sort((a, b) => (a.date < b.date ? 1 : -1)); // terbaru dulu
 
-  
+  // Funnel total (agregat rentang).
   const sum = (f) => by_date.reduce((s, r) => s + f(r), 0);
   const r2 = (n) => Math.round(n * 100) / 100;
   const funnel = {
@@ -1951,8 +1964,8 @@ async function loadSapReconciliationData(fromDate, toDate) {
     overlap_hrs: r2(sum((r) => r.overlap_hrs)),
     staged_hrs: r2(sum((r) => r.staged_hrs)),
     posted_hrs: r2(sum((r) => r.posted_hrs)),
-    posted_order_hrs: r2(sum((r) => r.posted_order_hrs)),  
-    posted_cc_hrs: r2(sum((r) => r.posted_cc_hrs)),        
+    posted_order_hrs: r2(sum((r) => r.posted_order_hrs)),  // = CSV konfirmasi-order SAP
+    posted_cc_hrs: r2(sum((r) => r.posted_cc_hrs)),        // cost-center, tak di CSV
     pending_hrs: r2(sum((r) => r.pending_hrs)),
     failed_hrs: r2(sum((r) => r.failed_hrs)),
     skipped_hrs: r2(sum((r) => r.skipped_hrs)),
@@ -1972,10 +1985,10 @@ async function loadSapReconciliationData(fromDate, toDate) {
   };
 }
 
-
-
-
-
+// GET /dashboard/sap-reconciliation?from=YYYY-MM-DD&to=YYYY-MM-DD
+// Rekonsiliasi rantai jam mesin: mch_transaction (sumber, mentah vs clamp) -> staging
+// (bundel yang dikirim) -> status SAP (POSTED/PENDING/FAILED/SKIPPED). Menjelaskan KENAPA
+// angka berbeda di tiap tahap + menandai apa yang perlu diperbaiki.
 async function getSapReconciliation(req, res) {
   try {
     const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : null;
@@ -1988,8 +2001,8 @@ async function getSapReconciliation(req, res) {
   }
 }
 
-
-
+// GET /dashboard/sap-reconciliation-export?from=YYYY-MM-DD&to=YYYY-MM-DD
+// Export rekonsiliasi (summary + per tanggal) ke Excel .xlsx untuk rentang terpilih.
 async function exportSapReconciliation(req, res) {
   try {
     const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : null;
@@ -2050,7 +2063,7 @@ async function exportSapReconciliation(req, res) {
     by.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFCAF0F8" } };
     by.views = [{ state: "frozen", ySplit: 1 }];
 
-    
+    // --- Sheet 3: Bundles (per konfirmasi staging, rentang penuh) ---
     const bd = wb.addWorksheet("Bundles");
     bd.columns = [
       { header: "Date", key: "date", width: 12 },
@@ -2103,7 +2116,7 @@ async function exportSapReconciliation(req, res) {
        FROM public.sap_timesheet_staging st
        LEFT JOIN public.usernfc u
          ON u.snssb = COALESCE(NULLIF(st.pernr_origin, ''), st.pernr)
-       WHERE st.bucket_start::date BETWEEN $1::date AND $2::date
+       WHERE st.bucket_start::date BETWEEN $1::date AND $2::date${plantScope("st")}
        ORDER BY st.bucket_start, st.id`,
       [data.range.from, data.range.to],
     );
@@ -2132,7 +2145,7 @@ async function exportSapReconciliation(req, res) {
     bd.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFCAF0F8" } };
     bd.views = [{ state: "frozen", ySplit: 1 }];
 
-    
+    // --- Sheet 4: Records (per segmen MCH + per tsnumber TIMESHEET, kolom Source) ---
     const rc = wb.addWorksheet("Records");
     rc.columns = [
       { header: "Date", key: "date", width: 12 },
@@ -2206,9 +2219,9 @@ async function exportSapReconciliation(req, res) {
   }
 }
 
-
-
-
+// GET /dashboard/sap-reconciliation-day?date=YYYY-MM-DD
+// Drill level-2: daftar "konfirmasi" (bundel staging) untuk satu hari kerja, tiap baris
+// membawa jam SUMBER (dari mesin, clamp saat ini) vs jam DIKIRIM (staged) + status.
 async function getSapReconciliationDay(req, res) {
   try {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(req.query.date || "")) {
@@ -2252,7 +2265,7 @@ async function getSapReconciliationDay(req, res) {
        FROM public.sap_timesheet_staging st
        LEFT JOIN public.usernfc u
          ON u.snssb = COALESCE(NULLIF(st.pernr_origin, ''), st.pernr)
-       WHERE st.source_system = 'MCH_HOURS' AND st.bucket_start::date = $1::date
+       WHERE st.source_system = 'MCH_HOURS' AND st.bucket_start::date = $1::date${plantScope("st")}
        ORDER BY (st.status='POSTED') DESC, st.is_productive DESC, st.total_seconds DESC`,
       [day],
     );
@@ -2263,9 +2276,9 @@ async function getSapReconciliationDay(req, res) {
   }
 }
 
-
-
-
+// GET /dashboard/sap-reconciliation-records?from&to&page&pageSize&q
+// Tabel RECORDS (per segmen sumber MCH) dengan pagination server-side + search —
+// sumber tampilan visual utama panel rekonsiliasi (sama dengan sheet Records export).
 async function getSapReconciliationRecords(req, res) {
   try {
     const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || "") ? req.query.from : null;
@@ -2280,8 +2293,8 @@ async function getSapReconciliationRecords(req, res) {
 
     const params = [fromDate, toDate];
     if (q) params.push(`%${q}%`);
-    
-    
+    // Kolom berat (break/cap cut) dihitung HANYA untuk baris halaman — base pemilihan
+    // staging tetap ringan sehingga range besar tidak memperlambat halaman.
     const sql = buildRecordsPageSql(capCfg, { source, search: Boolean(q) });
     const { rows } = await pool.query(sql, [...params, pageSize, (page - 1) * pageSize]);
     const total = rows[0]?.total_count || 0;
@@ -2293,8 +2306,8 @@ async function getSapReconciliationRecords(req, res) {
   }
 }
 
-
-
+// POST /dashboard/sap-staging-exclusion
+// Tandai record MCH excluded (soft delete) + antri recalc otomatis hari itu.
 async function excludeSapRecord(req, res) {
   try {
     const sourceRowId = String(req.body?.source_row_id || "").trim();
@@ -2305,7 +2318,7 @@ async function excludeSapRecord(req, res) {
     const { rows } = await sapPool.query(
       `SELECT to_char(st.bucket_start, 'YYYY-MM-DD') AS d FROM public.sap_staging_source ss
        JOIN public.sap_timesheet_staging st ON st.id = ss.staging_id
-       WHERE ss.source_system = 'MCH_HOURS' AND ss.source_row_id = $1
+       WHERE ss.source_system = 'MCH_HOURS' AND ss.source_row_id = $1${plantScope("st")}
        ORDER BY st.bucket_start DESC LIMIT 1`,
       [sourceRowId],
     );
@@ -2338,7 +2351,7 @@ async function excludeSapRecord(req, res) {
   }
 }
 
-
+// DELETE /dashboard/sap-staging-exclusion?source_row_id=...
 async function unexcludeSapRecord(req, res) {
   try {
     const sourceRowId = String(req.query.source_row_id || "").trim();
@@ -2375,8 +2388,8 @@ async function unexcludeSapRecord(req, res) {
   }
 }
 
-
-
+// GET /dashboard/sap-staging-exclusion — daftar record excluded + detail sumber
+// Filter opsional: from, to (tanggal record MCH), q (cari pernr/nama/mesin/aktivitas/id/note).
 async function listSapExclusions(req, res) {
   try {
     const from = String(req.query.from || "").trim();
@@ -2415,8 +2428,8 @@ async function listSapExclusions(req, res) {
   }
 }
 
-
-
+// GET /dashboard/sap-reconciliation-record?staging_id=123
+// Drill level-3: rekaman mch_transaction mentah pembentuk satu konfirmasi + respons SAP.
 async function getSapReconciliationRecord(req, res) {
   try {
     const stagingId = parseInt(req.query.staging_id, 10);
@@ -2431,7 +2444,7 @@ async function getSapReconciliationRecord(req, res) {
            round(total_seconds/3600.0,2)::float AS sent_hrs,
            to_char(bucket_start,'YYYY-MM-DD') AS day,
            COALESCE(sap_response_text, sap_error, '') AS sap_response
-         FROM public.sap_timesheet_staging WHERE id = $1`,
+         FROM public.sap_timesheet_staging WHERE id = $1${PW_SQL}`,
         [stagingId],
       ),
       pool.query(
