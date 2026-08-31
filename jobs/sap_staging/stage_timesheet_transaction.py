@@ -149,6 +149,11 @@ def fetch_rows(from_ts: datetime, to_ts: datetime, limit: int) -> list[dict]:
         AND t.longdate_checkout <  (%s::timestamp AT TIME ZONE %s)
         AND COALESCE(t.state_flag, 0) <> 5
         AND COALESCE(t.activitytype, '') <> '0000'
+        AND NOT EXISTS (
+          SELECT 1 FROM public.sap_staging_exclusion ex
+          WHERE ex.source_system = 'TIMESHEET'
+            AND ex.source_row_id = t.tsnumber::text
+        )
     ),
     effective AS (
       SELECT
