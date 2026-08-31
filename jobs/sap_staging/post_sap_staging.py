@@ -176,7 +176,7 @@ def parse_csv_values(value: str | None) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
-def claim_selected_rows(ids: list[str], ztimesheetids: list[str], allow_posted: bool) -> list[dict]:
+def claim_selected_rows(ids: list[str], ztimesheetids: list[str], allow_posted: bool, plant: str | None = None) -> list[dict]:
     filters = []
     params: list[Any] = []
 
@@ -189,6 +189,12 @@ def claim_selected_rows(ids: list[str], ztimesheetids: list[str], allow_posted: 
     if not filters:
         return []
 
+    # Per-plant: posting dari MPS satu plant hanya menyentuh werks-nya sendiri.
+    plant_filter = ""
+    if plant:
+        plant_filter = "AND werks = %s"
+        params.append(plant)
+
     status_filter = "" if allow_posted else "AND status <> 'POSTED'"
     where_sql = " OR ".join(f"({item})" for item in filters)
     sql = f"""
@@ -196,6 +202,7 @@ def claim_selected_rows(ids: list[str], ztimesheetids: list[str], allow_posted: 
     FROM sap_timesheet_staging
     WHERE ({where_sql})
       {status_filter}
+      {plant_filter}
     ORDER BY id
     FOR UPDATE SKIP LOCKED
     """
@@ -475,7 +482,8 @@ def process_rows(args: argparse.Namespace) -> None:
     selected_ids = parse_csv_values(args.ids)
     selected_ztimesheetids = parse_csv_values(args.ztimesheetids)
     if selected_ids or selected_ztimesheetids:
-        rows = claim_selected_rows(selected_ids, selected_ztimesheetids, args.allow_posted)
+        plant = None if args.all_plants else (args.plant or plant_code())
+        rows = claim_selected_rows(selected_ids, selected_ztimesheetids, args.allow_posted, plant)
     else:
         plant = None if args.all_plants else (args.plant or plant_code())
         productive = None
